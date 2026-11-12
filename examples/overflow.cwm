@@ -1,0 +1,39 @@
+// Stack buffer overflow: input bytes fill an 8 byte buffer, then spill
+// into the saved return address next to it.
+import "lib/memory.cwm"
+
+scene "overflow" {
+  size (1280, 720)
+  background #0f1217
+
+  let left = 280
+  let row_y = 360
+  let input_y = 180
+
+  byte_row buf n 8 fill #2a3340 at (left, row_y)
+  byte_row ret n 4 fill #3d4f2a at (left + 8 * 48 + 16, row_y)
+
+  // 12 input bytes waiting above the buffer.
+  repeat 12 as i {
+    rect byte[i] size (36, 36) at (left + i * 48, input_y) color #ffb347
+  }
+
+  at 0.5s fade_in byte[0] duration 300ms
+  repeat 12 as i {
+    with fade_in byte[i] duration 300ms
+  }
+
+  // Bytes drop into place one after another.
+  repeat 8 as i {
+    after 0.05s move byte[i] to (left + i * 48, row_y) duration 250ms ease out
+  }
+  // The last four land on the return address and corrupt it.
+  repeat 4 as i {
+    after 0.05s move byte[8 + i] to (left + (8 + i) * 48 + 16, row_y) duration 250ms ease out
+    with color ret.cell[i] to #e5484d duration 250ms
+  }
+  wait 0.5s
+  repeat 4 as i {
+    with scale ret.cell[i] to 1.15 duration 300ms
+  }
+}

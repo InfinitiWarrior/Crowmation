@@ -1,0 +1,55 @@
+// Router teardown: where the firmware, and its hardcoded credentials, live.
+// 3D is enabled by declaring a camera or a model. 2D objects then sit in the
+// same space (on the z = 0 plane unless given `z`), so 3D parts can pass
+// through them. `layer overlay` keeps an object fixed on screen, and `pin`
+// makes it follow a 3D part.
+
+scene "router" {
+  size (1920, 1080)
+  background #0d1117
+
+  let amber = #ffb347
+  let red = #e5484d
+
+  camera cam fov 30deg at (960, 600)
+  model router "models/router.glb" size 760 at (960, 640)
+
+  text title "Inside a home router" size 56 layer overlay at (960, 90)
+
+  // A 2D card in the world: it slices through the router where they meet.
+  rect card size (820, 150) corner 14 color #161b22 outline #388bfd outline_width 3 at (960, 740) z 260
+  text card_txt "firmware lives on the SPI flash chip" size 36 color #c9d1d9 at (960, 740) z 260
+
+  // Label that follows the flash chip as the camera moves.
+  text chip_lbl "SPI flash: firmware + hardcoded creds" size 30 color amber pin router.flash_chip at (0, -110)
+  arrow chip_arrow from (0, -85) to (0, -18) width 4 color amber pin router.flash_chip
+
+  at 0.2s fade_in title duration 600ms
+  with fade_in router duration 1s
+
+  // The card starts in front of the router and moves back through it.
+  after fade_in card duration 500ms
+  with fade_in card_txt duration 500ms
+  after move card to (960, 740, -150) duration 2.5s
+  with move card_txt to (960, 740, -150) duration 2.5s
+  after fade_out card duration 500ms
+  with fade_out card_txt duration 500ms
+
+  // Look down at the router from above and to the side.
+  after tilt cam to 32deg duration 1.6s
+  with orbit cam to -25deg duration 1.6s
+
+  // Lift the lid off.
+  after 0.3s move router.lid by (0, -300) duration 1.2s
+  with move router.leds by (0, -300) duration 1.2s
+
+  // Point at the flash chip.
+  after color router.flash_chip to red duration 500ms
+  with fade_in chip_lbl duration 500ms
+  with fade_in chip_arrow duration 500ms
+
+  // Swing around; the label stays on the chip.
+  after 0.5s orbit cam by 70deg duration 3s
+  after explode router by 0.35 duration 1.5s
+  wait 1.5s
+}

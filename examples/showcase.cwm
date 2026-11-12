@@ -1,0 +1,178 @@
+// Showcase: a title card, a stack buffer overflow in 2D, then a 3D router
+// teardown in the same scene, then an end card.
+
+component cell(label, fill, ink, zoom) {
+  rect box size (56, 56) corner 6 color fill scale zoom
+  code t content label size 22 color ink scale zoom
+}
+
+scene "showcase" {
+  size (1920, 1080)
+  background #0d1117
+
+  let red = #e5484d
+  let amber = #ffb347
+  let blue = #388bfd
+  let dim = #6e7681
+  let ink = #c9d1d9
+
+  // 3D scene: the 2D parts sit on the z = 0 plane and look like plain 2D.
+  camera cam fov 30deg
+
+  // Title card.
+  text logo "*Crowmation*" size 120 at (960, 470) layer overlay
+  text tagline "animations written as code, rendered on the GPU" size 36 color dim at (960, 580) layer overlay
+
+  // Act 1: stack buffer overflow.
+  text h1 "Stack buffer overflow" size 52 at (960, 110) layer overlay
+  rect code_bg size (760, 250) corner 12 color #161b22 outline #30363d at (560, 400)
+  code src "
+    void greet(void) {
+        char name[16];
+        gets(name);   // no length check
+    }
+  " lang "c" size 28 at (560, 400)
+  rect term size (760, 130) corner 12 color #010409 outline #30363d at (560, 680)
+  code input "$ ./greet AAAAAAAAAAAAAAAABBBBBBBB\\xef\\xbe\\xad\\xde" size 22 color amber at (560, 680)
+
+  let col0 = 1143
+  let pitch = 62
+  let row_y = [760, 680, 560, 460]
+  let row_name = ["name[0..7]", "name[8..15]", "saved rbp", "return addr"]
+  let before = [
+    "00", "00", "00", "00", "00", "00", "00", "00",
+    "00", "00", "00", "00", "00", "00", "00", "00",
+    "e0", "df", "ff", "ff", "fe", "7f", "00", "00",
+    "36", "11", "40", "00", "00", "00", "00", "00",
+  ]
+  let payload = [
+    "41", "41", "41", "41", "41", "41", "41", "41",
+    "41", "41", "41", "41", "41", "41", "41", "41",
+    "42", "42", "42", "42", "42", "42", "42", "42",
+    "ef", "be", "ad", "de", "00", "00", "00", "00",
+  ]
+  rect name_box size (520, 160) corner 10 color #388bfd30 at (1360, 720)
+  repeat 4 as r {
+    text lbl[r] content row_name[r] size 22 color dim at (1020, row_y[r])
+    repeat 8 as c {
+      cell s[r * 8 + c] label before[r * 8 + c] fill #21262d ink dim zoom 1 at (col0 + c * pitch, row_y[r])
+    }
+  }
+  repeat 32 as k {
+    cell p[k] label payload[k] fill #2d2a1e ink amber zoom 0.4 at (560, 680)
+  }
+  arrow jump from (1360, 425) to (1360, 330) width 4 color red
+  code rip "RIP = 0xdeadbeef" size 30 color red at (1360, 300)
+
+  // Act 2: the same scene in 3D.
+  text h2 "Where the firmware lives" size 52 at (960, 110) layer overlay
+  model router "models/router.glb" size 720 at (960, 610)
+  rect card size (760, 150) corner 14 color #161b22 outline blue outline_width 3 at (960, 480) z 260
+  text card_txt "2D and 3D share one space" size 38 color ink at (960, 480) z 260
+  rect chip_bg size (640, 54) corner 10 color #0d1117e0 pin router.flash_chip at (0, -110)
+  text chip_lbl "SPI flash: firmware + hardcoded creds" size 30 color amber pin router.flash_chip at (0, -110)
+  arrow chip_arrow from (0, -85) to (0, -18) width 4 color amber pin router.flash_chip
+
+  // End card.
+  text end1 "*Crowmation*" size 96 at (960, 450) layer overlay
+  text end2 "Rust · wgpu · vello · Typst" size 34 color dim at (960, 550) layer overlay
+  math end3 "t |-> \"frame\"(t)" size 44 color blue at (960, 650) layer overlay
+
+  // Title.
+  at 0.3s fade_in logo duration 800ms
+  after -0.4s fade_in tagline duration 800ms
+  wait 2.2s
+  after fade_out logo duration 500ms
+  with fade_out tagline duration 500ms
+
+  // Overflow: code, stack, then the input bytes climb past the buffer.
+  after fade_in h1 duration 500ms
+  with fade_in code_bg duration 500ms
+  with fade_in src duration 500ms
+  with fade_in name_box duration 500ms
+  repeat 4 as r {
+    with fade_in lbl[r] duration 500ms
+    repeat 8 as c {
+      with fade_in s[r * 8 + c] duration 500ms
+    }
+  }
+  after 1.2s fade_in term duration 400ms
+  with fade_in input duration 400ms
+  wait 1.2s
+  // First half fills the buffer exactly, pause, then the rest overflows it.
+  repeat 2 as half {
+    repeat 2 as rr {
+      let r = half * 2 + rr
+      repeat 8 as c {
+        after -0.25s fade_in p[r * 8 + c] duration 120ms
+        with move p[r * 8 + c] by (col0 + c * pitch - 560, row_y[r] - 680) duration 380ms ease out
+        with scale p[r * 8 + c].box to 1 duration 380ms ease out
+        with scale p[r * 8 + c].t to 1 duration 380ms ease out
+      }
+    }
+    wait 1s
+  }
+  after color name_box to #e5484d40 duration 400ms
+  repeat 16 as k {
+    with color p[16 + k].box to #4a1d20 duration 400ms
+    with color p[16 + k].t to #ff9592 duration 400ms
+  }
+  with color lbl[2] to red duration 400ms
+  with color lbl[3] to red duration 400ms
+  after 1s fade_in jump duration 400ms
+  after fade_in rip duration 400ms
+  wait 2.8s
+
+  // Clear the 2D diagram.
+  after fade_out h1 duration 500ms
+  with fade_out code_bg duration 500ms
+  with fade_out src duration 500ms
+  with fade_out term duration 500ms
+  with fade_out input duration 500ms
+  with fade_out name_box duration 500ms
+  with fade_out jump duration 500ms
+  with fade_out rip duration 500ms
+  repeat 4 as r {
+    with fade_out lbl[r] duration 500ms
+  }
+  repeat 32 as k {
+    with fade_out s[k] duration 500ms
+    with fade_out p[k] duration 500ms
+  }
+
+  // Router appears; a 2D card passes back through it.
+  after fade_in h2 duration 600ms
+  with fade_in router duration 1s
+  after fade_in card duration 400ms
+  with fade_in card_txt duration 400ms
+  after move card to (960, 480, -420) duration 2.6s
+  with move card_txt to (960, 480, -420) duration 2.6s
+  wait 0.6s
+  after fade_out card duration 400ms
+  with fade_out card_txt duration 400ms
+
+  // Look inside.
+  after tilt cam to 32deg duration 1.6s
+  with orbit cam to -25deg duration 1.6s
+  with move cam by (0, 60) duration 1.6s
+  after move router.lid by (0, -280) duration 1.1s
+  with move router.leds by (0, -280) duration 1.1s
+  wait 0.6s
+  after color router.flash_chip to red duration 400ms
+  with fade_in chip_bg duration 400ms
+  with fade_in chip_lbl duration 400ms
+  with fade_in chip_arrow duration 400ms
+  after 1.2s orbit cam by 60deg duration 3.5s
+  wait 1.5s
+
+  // End card.
+  after fade_out router duration 700ms
+  with fade_out h2 duration 700ms
+  with fade_out chip_bg duration 700ms
+  with fade_out chip_lbl duration 700ms
+  with fade_out chip_arrow duration 700ms
+  after fade_in end1 duration 700ms
+  after -0.4s fade_in end2 duration 700ms
+  after -0.4s fade_in end3 duration 700ms
+  wait 3s
+}

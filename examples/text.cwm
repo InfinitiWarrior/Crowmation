@@ -1,0 +1,26 @@
+// Text, code and math, laid out by Typst.
+scene "text" {
+  size (1280, 720)
+  background #0f1217
+
+  text title "The *gets()* problem" size 48 at (640, 90)
+
+  code src "
+    char buf[8];
+    gets(buf);   // no length check
+    return 0;
+  " lang "c" size 26 at (640, 250)
+
+  code dump "
+    00000000  41 41 41 41 41 41 41 41  |AAAAAAAA|
+    00000010  42 42 42 42 ef be ad de  |BBBB....|
+  " size 22 at (640, 400) color #9fb3c8
+
+  math bound "sum_(i=0)^(n-1) 1 = n > 8" size 40 at (640, 580)
+
+  at 0s fade_in title duration 600ms
+  after fade_in src
+  with fade_in dump
+  after fade_in bound
+  after color title to #e5484d duration 500ms
+}

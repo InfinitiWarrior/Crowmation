@@ -1,0 +1,19 @@
+[package]
+name = "crowmation"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+crowmation-core.workspace = true
+crowmation-render.workspace = true
+image = { version = "0.25", default-features = false, features = ["png"] }
+crowmation-preview = { path = "../preview" }
+crowmation-lang.workspace = true
+crowmation-encode.workspace = true
+lsp-server = "0.10"
+serde_json = "1"
+
+[features]
+default = ["nvenc"]
+# NVIDIA hardware encoding; build with --no-default-features on machines without the NVIDIA driver.
+nvenc = ["crowmation-encode/nvenc"]

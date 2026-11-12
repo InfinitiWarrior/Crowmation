@@ -1,0 +1,12 @@
+[package]
+name = "crowmation-lang"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+crowmation-core.workspace = true
+glam.workspace = true
+ariadne = "0.6"
+crowmation-text.workspace = true
+crowmation-mesh.workspace = true
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }

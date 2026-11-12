@@ -1,0 +1,32 @@
+// SQL injection: browser sends a crafted request, the server dumps users.
+import "std:cybersec"
+
+scene "sqli" {
+  size (1920, 1080)
+  background #0f1217
+
+  browser web url "shop.example/item?id=1' OR '1'='1" width 760 height 460 at (460, 330)
+  image shot "assets/screenshot.png" width 600 at (460, 350) outline #d0d7de outline_width 1
+
+  panel req title "Request" body "
+    GET /item?id=1' OR '1'='1
+    Host: shop.example
+  " width 640 height 220 accent #58a6ff at (1400, 260)
+
+  panel res title "Response" body "
+    200 OK
+    admin   | 5f4dcc3b5aa7...
+    alice   | e99a18c428cb...
+  " width 640 height 240 accent #e5484d at (1400, 700)
+
+  arrow send from (860, 300) to (1060, 260) color #58a6ff width 5
+  arrow leak from (1400, 400) to (1400, 560) color #e5484d width 5
+
+  at 0s fade_in web
+  with fade_in shot
+  after fade_in send duration 500ms
+  with fade_in req
+  after fade_in leak duration 500ms
+  after fade_in res
+  with move res by (0, -20) ease out
+}

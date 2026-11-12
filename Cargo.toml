@@ -1,0 +1,20 @@
+[workspace]
+resolver = "3"
+members = ["core", "lang", "text", "render", "encode", "preview", "cli", "mesh"]
+
+[workspace.package]
+edition = "2024"
+
+[workspace.dependencies]
+crowmation-core = { path = "core" }
+crowmation-render = { path = "render" }
+crowmation-lang = { path = "lang" }
+crowmation-text = { path = "text" }
+crowmation-mesh = { path = "mesh" }
+crowmation-encode = { path = "encode" }
+glam = { version = "0.34", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+ron = "0.12"
+
+[profile.release]
+lto = "thin"

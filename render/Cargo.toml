@@ -1,0 +1,17 @@
+[package]
+name = "crowmation-render"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+crowmation-core.workspace = true
+vello = "0.12"
+pollster = "1"
+crowmation-text.workspace = true
+crowmation-mesh.workspace = true
+glam.workspace = true
+
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+
+[dev-dependencies]
+crowmation-lang.workspace = true

@@ -1,0 +1,10 @@
+[package]
+name = "crowmation-text"
+version = "0.1.0"
+edition.workspace = true
+
+[dependencies]
+vello = "0.12"
+typst = "0.15"
+typst-assets = { version = "0.15", features = ["fonts"] }
+typst-layout = "0.15"

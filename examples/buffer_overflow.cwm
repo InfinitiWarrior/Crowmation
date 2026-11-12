@@ -1,0 +1,131 @@
+// Stack buffer overflow, step by step: gets() copies input past the end of
+// a 16 byte buffer, over the saved frame pointer and into the return address.
+// On `ret` the CPU jumps wherever the input said.
+
+// One stack byte: a cell with its hex value.
+// `zoom` is the starting scale of both parts.
+component cell(label, fill, ink, zoom) {
+  rect box size (64, 64) corner 6 color fill scale zoom
+  code t content label size 26 color ink scale zoom
+}
+
+scene "buffer_overflow" {
+  size (1920, 1080)
+  background #0d1117
+
+  let red = #e5484d
+  let amber = #ffb347
+  let dim = #6e7681
+
+  // Stack rows, lowest address at the bottom. Row r holds bytes r*8 .. r*8+7.
+  let col0 = 1148
+  let pitch = 72
+  let row_y = [640, 540, 400, 300]
+  let row_name = ["name[0..7]", "name[8..15]", "saved rbp", "return addr"]
+  let row_addr = ["0x7ffe5810", "0x7ffe5818", "0x7ffe5820", "0x7ffe5828"]
+  let before = [
+    "00", "00", "00", "00", "00", "00", "00", "00",
+    "00", "00", "00", "00", "00", "00", "00", "00",
+    "e0", "df", "ff", "ff", "fe", "7f", "00", "00",
+    "36", "11", "40", "00", "00", "00", "00", "00",
+  ]
+  let payload = [
+    "41", "41", "41", "41", "41", "41", "41", "41",
+    "41", "41", "41", "41", "41", "41", "41", "41",
+    "42", "42", "42", "42", "42", "42", "42", "42",
+    "ef", "be", "ad", "de", "00", "00", "00", "00",
+  ]
+
+  text title "Stack buffer overflow" size 56 at (960, 80)
+
+  // Source code with a bar marking the current line.
+  rect code_bg size (800, 300) corner 12 color #161b22 outline #30363d at (480, 330)
+  let line0 = 258
+  let line_h = 36.6
+  rect hl size (780, 36) corner 6 color #ffffff18 at (480, line0)
+  code src "
+    void greet(void) {
+        char name[16];
+        gets(name);          // no length check
+        printf(\"Hi %s\\n\", name);
+    }                        // ret
+  " lang "c" size 26 at (480, 330)
+
+  // Terminal.
+  rect term size (800, 220) corner 12 color #010409 outline #30363d at (480, 800)
+  code cmd "$ ./greet" size 24 color #c9d1d9 at (195, 730)
+  code input "AAAAAAAAAAAAAAAABBBBBBBB\\xef\\xbe\\xad\\xde" size 24 color amber at (418, 790)
+  code segv "Segmentation fault (core dumped)" size 24 color red at (360, 850)
+
+  // Stack frame of greet().
+  text stack_title "stack of greet()" size 30 color dim at (1010, 200)
+  rect name_box size (600, 184) corner 10 color #388bfd30 at (1400, 590)
+  text name_lbl "char name[16]" size 22 color #388bfd at (1400, 710)
+  repeat 4 as r {
+    text lbl[r] content row_name[r] size 22 color dim at (1010, row_y[r])
+    code addr[r] content row_addr[r] size 20 color dim at (1790, row_y[r])
+    repeat 8 as c {
+      cell s[r * 8 + c] label before[r * 8 + c] fill #21262d ink dim zoom 1 at (col0 + c * pitch, row_y[r])
+    }
+  }
+
+  // Input bytes start small on the terminal's input line, hidden.
+  repeat 32 as k {
+    cell p[k] label payload[k] fill #2d2a1e ink amber zoom 0.4 at (480, 790)
+  }
+
+  // Where the CPU goes on ret.
+  arrow jump from (1400, 262) to (1400, 165) width 4 color red
+  code rip "RIP = 0x00000000deadbeef" size 28 color red at (1400, 140)
+
+  // 1. The frame exists, the buffer is empty.
+  at 0.3s fade_in title duration 600ms
+  after fade_in code_bg duration 500ms
+  with fade_in src duration 500ms
+  with fade_in hl duration 500ms
+  after fade_in stack_title duration 400ms
+  repeat 4 as r {
+    with fade_in lbl[r] duration 600ms
+    with fade_in addr[r] duration 600ms
+    repeat 8 as c {
+      with fade_in s[r * 8 + c] duration 600ms
+    }
+  }
+  after move hl by (0, line_h) duration 400ms
+  with fade_in name_box duration 400ms
+  with fade_in name_lbl duration 400ms
+
+  // 2. gets() reads a line that is longer than the buffer.
+  after 0.6s move hl by (0, line_h) duration 400ms
+  with fade_in term duration 400ms
+  with fade_in cmd duration 400ms
+  after 0.2s fade_in input duration 800ms
+
+  // 3. Bytes are copied upward, one by one, with no length check.
+  wait 0.4s
+  repeat 4 as r {
+    repeat 8 as c {
+      after -0.26s fade_in p[r * 8 + c] duration 150ms
+      with move p[r * 8 + c] by (col0 + c * pitch - 480, row_y[r] - 790) duration 340ms ease out
+      with scale p[r * 8 + c].box to 1 duration 340ms ease out
+      with scale p[r * 8 + c].t to 1 duration 340ms ease out
+    }
+  }
+  // The copy ran past name[15]: the frame pointer and return address are gone.
+  after color name_box to #e5484d40 duration 400ms
+  with color name_lbl to red duration 400ms
+  repeat 16 as k {
+    with color p[16 + k].box to #4a1d20 duration 400ms
+    with color p[16 + k].t to #ff9592 duration 400ms
+  }
+  with color lbl[2] to red duration 400ms
+  with color lbl[3] to red duration 400ms
+
+  // 4. printf runs, then ret pops the overwritten address into RIP.
+  after 0.8s move hl by (0, line_h) duration 400ms
+  after 0.6s move hl by (0, line_h) duration 400ms
+  after 0.3s fade_in jump duration 400ms
+  after fade_in rip duration 500ms
+  after 0.4s fade_in segv duration 400ms
+  wait 2s
+}

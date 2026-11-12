@@ -1,0 +1,8 @@
+// Reusable memory pieces.
+
+// A row of n byte cells, 48px apart, starting at the instance's `at`.
+component byte_row(n, fill) {
+  repeat n as i {
+    rect cell[i] size (44, 44) at (i * 48, 0) color fill
+  }
+}

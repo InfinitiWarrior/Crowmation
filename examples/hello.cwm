@@ -1,0 +1,15 @@
+// The phase 1 hello.ron, written as a scene.
+scene "hello" {
+  size (1280, 720)
+  fps 60
+  background #0f1217
+
+  rect box size (200, 120) at (200, 360) color #3399ff
+  circle dot radius 60 at (640, 360) color #ff4d4d
+
+  at 0s    move box to (1080, 360) duration 2s
+  at 0.5s  rotate box by 180deg duration 2s
+  at 1s    fade_in dot
+  after    scale dot to 2.5 duration 1.5s ease out
+  with     color dot to #4dff80 duration 1.5s ease linear
+}

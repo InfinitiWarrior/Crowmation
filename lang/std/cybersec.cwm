@@ -1,0 +1,44 @@
+// Built in cybersecurity building blocks: `import "std:cybersec"`.
+// Every component is centered on its `at`. Animate a whole instance with
+// fades, color and `move ... by`, or its parts by name (`row.cell[3]`).
+
+// One byte: a cell with a label, like "41".
+component byte(label, fill) {
+  rect box size (44, 44) corner 4 color fill
+  code t content label size 18 color #e6edf3
+}
+
+// A row of n empty cells, 48px apart, centered.
+component memory_row(n, fill) {
+  repeat n as i {
+    rect cell[i] size (44, 44) corner 4 color fill at ((i - (n - 1) / 2) * 48, 0)
+  }
+}
+
+// rows x cols cells, named cell[row * cols + col], centered.
+component memory_grid(rows, cols, fill) {
+  repeat rows as r {
+    repeat cols as c {
+      rect cell[r * cols + c] size (44, 44) corner 4 color fill at ((c - (cols - 1) / 2) * 48, (r - (rows - 1) / 2) * 48)
+    }
+  }
+}
+
+// HTTP request or response: title bar plus a monospace body.
+component panel(title, body, width, height, accent) {
+  rect bg size (width, height) corner 10 color #161b22 outline #30363d
+  rect bar size (width, 44) corner 10 color accent at (0, -height / 2 + 22)
+  text title content title size 22 color #0d1117 at (0, -height / 2 + 22)
+  code body content body size 18 color #c9d1d9 at (0, 22)
+}
+
+// Stylized browser window with an address bar.
+component browser(url, width, height) {
+  rect frame size (width, height) corner 12 color #f6f8fa outline #d0d7de
+  rect top size (width, 56) corner 12 color #e6e9ed at (0, -height / 2 + 28)
+  circle close radius 7 color #ff5f57 at (-width / 2 + 24, -height / 2 + 28)
+  circle min radius 7 color #febc2e at (-width / 2 + 46, -height / 2 + 28)
+  circle max radius 7 color #28c840 at (-width / 2 + 68, -height / 2 + 28)
+  rect address size (width - 200, 32) corner 16 color #ffffff outline #d0d7de at (40, -height / 2 + 28)
+  code url content url size 16 color #57606a at (40, -height / 2 + 28)
+}
