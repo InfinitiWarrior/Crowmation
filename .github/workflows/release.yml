@@ -37,6 +37,11 @@ jobs:
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
+        # Creates the release, or adds the files if it was already made by hand on GitHub.
         run: |
-          gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes \
-            crowmation-x86_64-linux.tar.xz crowmation-x86_64-linux.tar.xz.sha256 editors/vscode/crowmation.vsix
+          files="crowmation-x86_64-linux.tar.xz crowmation-x86_64-linux.tar.xz.sha256 editors/vscode/crowmation.vsix"
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" $files --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes $files
+          fi
