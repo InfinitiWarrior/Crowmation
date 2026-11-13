@@ -735,6 +735,7 @@ name = "crowmation-encode"
 version = "0.1.0"
 dependencies = [
  "cudarc",
+ "libloading",
  "muxide",
  "nvidia-video-codec-sdk",
  "openh264",

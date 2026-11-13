@@ -31,13 +31,15 @@ pub enum Expr {
     List(Vec<Expr>, Span),
     /// `xs[i]`
     Index(Box<Expr>, Box<Expr>, Span),
+    /// `len(xs)`
+    Call(Word, Vec<Expr>, Span),
 }
 
 impl Expr {
     pub fn span(&self) -> Span {
         match self {
             Expr::Ident(w) => w.span.clone(),
-            Expr::Num(.., s) | Expr::Color(_, s) | Expr::Str(_, s) | Expr::Tuple(_, s) | Expr::Neg(_, s) | Expr::Bin(.., s) | Expr::List(_, s) | Expr::Index(.., s) => s.clone(),
+            Expr::Num(.., s) | Expr::Color(_, s) | Expr::Str(_, s) | Expr::Tuple(_, s) | Expr::Neg(_, s) | Expr::Bin(.., s) | Expr::List(_, s) | Expr::Index(.., s) | Expr::Call(.., s) => s.clone(),
         }
     }
 }
@@ -367,7 +369,21 @@ impl Parser<'_> {
                     name = format!("{name}.{part}");
                     end = s.end;
                 }
-                Expr::Ident(Word { name, span: span.start..end })
+                let word = Word { name, span: span.start..end };
+                if *self.peek() == Tok::LParen && !word.name.contains('.') {
+                    self.bump();
+                    let mut args = Vec::new();
+                    while *self.peek() != Tok::RParen {
+                        args.push(self.expr()?);
+                        if *self.peek() != Tok::Comma {
+                            break;
+                        }
+                        self.bump();
+                    }
+                    let end = self.expect(Tok::RParen, "`,` or `)`")?.end;
+                    return Ok(Expr::Call(word, args, span.start..end));
+                }
+                Expr::Ident(word)
             }
             Tok::Color(c) => Expr::Color(c, span),
             Tok::Str(s) => Expr::Str(s, span),

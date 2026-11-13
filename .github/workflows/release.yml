@@ -1,0 +1,42 @@
+# Push a tag like v0.1.0 to publish a GitHub release with:
+#   crowmation-x86_64-linux.tar.xz (+ .sha256): the binary, docs and editor files
+#   crowmation.vsix: the VS Code extension
+# website/install.sh downloads the latest of these.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  linux:
+    # An older Ubuntu, so the binary runs on any distro with glibc 2.35 or newer.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --profile dist -p crowmation
+      - name: VS Code extension
+        working-directory: editors/vscode
+        run: npm ci && python3 package_vsix.py
+      - name: Package
+        run: |
+          d=crowmation
+          mkdir -p $d/editors
+          cp target/dist/crowmation README.md $d/
+          cp -r docs $d/docs
+          cp -r editors/nvim $d/editors/nvim
+          cp LICENSE-MIT LICENSE-APACHE text/fonts/Inter-LICENSE.txt $d/
+          tar -cJf crowmation-x86_64-linux.tar.xz $d
+          sha256sum crowmation-x86_64-linux.tar.xz > crowmation-x86_64-linux.tar.xz.sha256
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --generate-notes \
+            crowmation-x86_64-linux.tar.xz crowmation-x86_64-linux.tar.xz.sha256 editors/vscode/crowmation.vsix

@@ -1,0 +1,32 @@
+# Tests and renders every example on a machine without a GPU: Mesa's
+# software Vulkan (lavapipe) stands in for the GPU and openh264 for NVENC.
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Software Vulkan and ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y mesa-vulkan-drivers libvulkan1 ffmpeg
+      - name: Tests
+        run: cargo test --workspace
+      - name: Build
+        run: cargo build --release -p crowmation
+      - name: Render every example
+        run: |
+          mkdir -p renders
+          for f in examples/*.cwm; do
+            ./target/release/crowmation render "$f" "renders/$(basename "$f" .cwm).mp4" --encoder openh264
+            ffprobe -v error -show_entries format=duration -of csv=p=0 "renders/$(basename "$f" .cwm).mp4"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: renders
+          path: renders/

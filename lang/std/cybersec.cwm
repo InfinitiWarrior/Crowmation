@@ -42,3 +42,18 @@ component browser(url, width, height) {
   rect address size (width - 200, 32) corner 16 color #ffffff outline #d0d7de at (40, -height / 2 + 28)
   code url content url size 16 color #57606a at (40, -height / 2 + 28)
 }
+
+// Hex dump of a byte list, like `bytes("payload.bin")`: offset, hex and ASCII
+// columns, `cols` bytes per row, `size` font size, top left corner at `at`.
+// Rows are off[r], hex[r] and asc[r], so they can be colored or faded one by one.
+component hexdump(data, cols, size) {
+  let rows = ceil(len(data) / cols)
+  let char = size * 0.602
+  let line = size * 1.45
+  repeat rows as r {
+    let row = slice(data, r * cols, cols)
+    code off[r] content hex(r * cols, 8) size size color #6e7681 align left at (0, r * line)
+    code hex[r] content join(row, " ") size size color #c9d1d9 align left at (char * 10, r * line)
+    code asc[r] content ascii(row) size size color #9fb3c8 align left at (char * (11 + cols * 3), r * line)
+  }
+}

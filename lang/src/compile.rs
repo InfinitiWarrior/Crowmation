@@ -64,11 +64,21 @@ fn type_err(span: &Span, expected: &str, got: &Val) -> Diag {
 }
 
 const COMMON_PROPS: &[&str] = &["at", "color", "opacity", "rotation", "scale"];
-const ACTION_PROPS: &[&str] = &["to", "by", "duration", "ease"];
+const ACTION_PROPS: &[&str] = &["to", "by", "duration", "ease", "stagger"];
+/// Placing an object next to another one instead of at a point.
+const LAYOUT: &[&str] = &["below", "above", "left_of", "right_of", "gap"];
 /// Props every 2D shape takes in addition to its own.
-const PLACE_2D: &[&str] = &["z", "layer", "pin"];
+const PLACE_2D: &[&str] = &["z", "layer", "pin", "below", "above", "left_of", "right_of", "gap"];
 pub(crate) const SHAPES: &[&str] = &["rect", "circle", "arrow", "line", "image", "text", "code", "math", "model", "camera"];
-pub(crate) const ACTIONS: &[&str] = &["move", "rotate", "scale", "fade", "fade_in", "fade_out", "color", "orbit", "tilt", "explode"];
+pub(crate) const ACTIONS: &[&str] =
+    &["move", "rotate", "scale", "fade", "fade_in", "fade_out", "color", "orbit", "tilt", "explode", "highlight", "shake", "section"];
+/// Functions usable in expressions, like `len(xs)` or `bytes("dump.bin")`.
+pub(crate) const FUNCTIONS: &[&str] =
+    &["len", "floor", "ceil", "round", "abs", "min", "max", "mod", "str", "hex", "join", "slice", "ascii", "bytes", "file", "table"];
+/// Largest data file `bytes`, `file` and `table` read.
+pub const MAX_DATA_FILE: u64 = 1 << 20;
+/// Most items a list made by a function can have.
+pub const MAX_LIST: usize = 65_536;
 pub(crate) const KEYWORDS: &[&str] = &["let", "wait", "repeat", "at", "after", "with", "scene", "component", "import"];
 
 #[derive(Clone)]
@@ -82,6 +92,13 @@ enum Change {
     Z { to: Option<f32>, by: Option<f32> },
     /// Axis 0 tilts, axis 1 orbits.
     Turn { axis: usize, to: Option<f32>, by: Option<f32> },
+    /// Scale up by the factor and back.
+    Pulse(f32),
+    /// Color to this and back.
+    Flash([f32; 4]),
+    /// Side to side by `amp` pixels, `times` times, back to the start.
+    Shake { amp: f32, times: u32 },
+    Section { to: Option<f32>, by: Option<f32> },
 }
 
 struct Pending {
@@ -156,9 +173,12 @@ struct Compiler<'a> {
     /// File the statements being compiled come from.
     file: usize,
     env: HashMap<String, Val>,
-    /// Inside a component instance: name prefix like `row.`, position offset and call chain.
+    /// Inside a component instance: name prefix like `row.`, the instance's
+    /// group object (new objects are its children), when its actions start
+    /// (`at` inside a component is relative to it) and the call chain.
     prefix: String,
-    origin: Vec2,
+    parent: Option<usize>,
+    base: f64,
     stack: Vec<String>,
     names: HashMap<String, usize>,
     objects: Vec<Object>,
@@ -173,10 +193,18 @@ struct Compiler<'a> {
     models: HashMap<usize, Vec<(usize, Vec3)>>,
     /// Camera declared without `at`: it looks at the frame center.
     camera_centered: Option<usize>,
+    /// Data files read by `bytes`, `file` and `table`, for hot reload.
+    deps: std::cell::RefCell<Vec<std::path::PathBuf>>,
 }
 
-/// `files[0]` is the scene file; the rest are imports.
-pub fn compile(files: &[Vec<Item>], paths: &[Option<std::path::PathBuf>], diags: &mut Vec<Diag>) -> Option<Timeline> {
+/// `files[0]` is the scene file; the rest are imports. Data files the scene
+/// reads are added to `deps`.
+pub fn compile(
+    files: &[Vec<Item>],
+    paths: &[Option<std::path::PathBuf>],
+    diags: &mut Vec<Diag>,
+    deps: &mut Vec<std::path::PathBuf>,
+) -> Option<Timeline> {
     let mut c = Compiler {
         diags: Vec::new(),
         paths,
@@ -185,7 +213,8 @@ pub fn compile(files: &[Vec<Item>], paths: &[Option<std::path::PathBuf>], diags:
         file: 0,
         env: HashMap::new(),
         prefix: String::new(),
-        origin: Vec2::ZERO,
+        parent: None,
+        base: 0.0,
         stack: Vec::new(),
         names: HashMap::new(),
         objects: Vec::new(),
@@ -197,6 +226,7 @@ pub fn compile(files: &[Vec<Item>], paths: &[Option<std::path::PathBuf>], diags:
         duration: None,
         models: HashMap::new(),
         camera_centered: None,
+        deps: Default::default(),
     };
     let mut scene = None;
     for (file, items) in files.iter().enumerate() {
@@ -220,6 +250,7 @@ pub fn compile(files: &[Vec<Item>], paths: &[Option<std::path::PathBuf>], diags:
         Some(body) => c.block(body),
         None => c.push(Diag::new(0..0, "no `scene { ... }` found")),
     }
+    deps.extend(c.deps.borrow_mut().drain(..));
     if !c.diags.is_empty() {
         diags.append(&mut c.diags);
         return None;
@@ -250,7 +281,7 @@ impl<'a> Compiler<'a> {
         if self.comps.contains_key(n) {
             return self.push(Diag::new(name.span.clone(), format!("component `{n}` is defined twice")));
         }
-        if let Some(p) = params.iter().find(|p| COMMON_PROPS.contains(&p.name.as_str())) {
+        if let Some(p) = params.iter().find(|p| COMMON_PROPS.contains(&p.name.as_str()) || LAYOUT.contains(&p.name.as_str())) {
             return self.push(Diag::new(p.span.clone(), format!("`{}` is reserved for placing the component", p.name)));
         }
         self.comps.insert(n.to_string(), Component { file, params, body });
@@ -274,7 +305,6 @@ impl<'a> Compiler<'a> {
                 let v = self.eval(value)?;
                 self.env.insert(name.name.clone(), v);
             }
-            Stmt::Wait(e) if self.in_component() => return Err(Diag::new(e.span(), "`wait` is not allowed inside a component")),
             Stmt::Wait(e) => {
                 let d = self.num(e, Dim::Time)?;
                 self.group.1 += d;
@@ -299,9 +329,8 @@ impl<'a> Compiler<'a> {
             Stmt::Cmd { timing, head, target, props } => {
                 let h = head.name.as_str();
                 let is_action = ACTIONS.contains(&h);
-                let known = is_action || SHAPES.contains(&h) || self.comps.contains_key(h);
-                if let Some((_, span)) = timing.as_ref().filter(|_| !is_action && known) {
-                    return Err(Diag::new(span.clone(), "only actions take timing; declare objects without `at`, `after` or `with`"));
+                if let Some((_, span)) = timing.as_ref().filter(|_| SHAPES.contains(&h)) {
+                    return Err(Diag::new(span.clone(), "only actions and component instances take timing; declare objects without `at`, `after` or `with`"));
                 }
                 if SHAPES.contains(&h) {
                     let name = self.decl_name(target)?;
@@ -314,12 +343,9 @@ impl<'a> Compiler<'a> {
                         return Err(d);
                     }
                 } else if is_action {
-                    if self.in_component() {
-                        return Err(Diag::new(head.span.clone(), "actions are not allowed inside a component yet"));
-                    }
                     self.action(timing.as_ref().map(|t| &t.0), head, target, props)?;
                 } else if self.comps.contains_key(h) {
-                    self.instance(head, target, props)?;
+                    self.instance(timing.as_ref().map(|t| &t.0), head, target, props)?;
                 } else {
                     let mut all: Vec<&str> = SHAPES.iter().chain(ACTIONS).copied().collect();
                     all.extend(self.comps.keys().map(String::as_str));
@@ -411,18 +437,7 @@ impl<'a> Compiler<'a> {
             "camera" => return self.camera(head, name, list),
             _ => {}
         }
-        let extra: &[&str] = match head.name.as_str() {
-            "rect" => &["size", "corner", "outline", "outline_width"],
-            "circle" => &["radius", "outline", "outline_width"],
-            "arrow" | "line" => &["from", "to", "width", "head"],
-            "image" => &["content", "size", "width", "outline", "outline_width"],
-            "code" => &["content", "size", "lang"],
-            _ => &["content", "size"],
-        };
-        // Lines are placed by `from`, not `at`.
-        let common: &[&str] = if extra.contains(&"from") { &["color", "opacity", "rotation", "scale"] } else { COMMON_PROPS };
-        let allowed: Vec<&str> = common.iter().chain(extra).chain(PLACE_2D).copied().collect();
-        let p = self.props(list, &allowed, &head.name)?;
+        let p = self.props(list, &props_of(&head.name), &head.name)?;
         let missing = |k: &str| Diag::new(head.span.clone(), format!("`{}` needs `{k}`", head.name));
         let mut at = p.vec2("at")?;
         let shape = match head.name.as_str() {
@@ -468,7 +483,14 @@ impl<'a> Compiler<'a> {
                 let source = typst_source(kind, &text, size, lang.as_ref().map(|l| l.0.as_str()))
                     .map_err(|m| Diag::new(span.clone(), m))?;
                 crowmation_text::layout(&source).map_err(|e| Diag::new(span, format!("typst: {e}")))?;
-                Shape::Typst { source }
+                let align = match p.get("align") {
+                    None => 0.5,
+                    Some((_, Val::Word(w), _)) if w == "left" => 0.0,
+                    Some((_, Val::Word(w), _)) if w == "center" => 0.5,
+                    Some((_, Val::Word(w), _)) if w == "right" => 1.0,
+                    Some((_, v, s)) => return Err(type_err(s, "`left`, `center` or `right`", v)),
+                };
+                Shape::Typst { source, align }
             }
         };
         let d = State::default();
@@ -477,12 +499,10 @@ impl<'a> Compiler<'a> {
             None if p.get("outline_width").is_some() => return Err(missing("outline")),
             None => None,
         };
-        let state = State { pos: self.origin + at.unwrap_or(d.pos), ..self.common_state(&p)? };
+        let state = State { pos: at.unwrap_or(d.pos), ..self.common_state(&p)? };
         let pin = match p.get("pin") {
             None => None,
-            Some((_, Val::Word(w), s)) => {
-                Some(*self.names.get(w).ok_or_else(|| Diag::new(s.clone(), format!("no object named `{w}` to pin to")))?)
-            }
+            Some((_, Val::Word(w), s)) => Some(self.lookup(w).ok_or_else(|| Diag::new(s.clone(), format!("no object named `{w}` to pin to")))?),
             Some((_, v, s)) => return Err(type_err(s, "an object name like `router.flash_chip`", v)),
         };
         let overlay = match p.get("layer") {
@@ -491,8 +511,91 @@ impl<'a> Compiler<'a> {
             Some((_, Val::Word(w), _)) if w == "world" => false,
             Some((_, v, s)) => return Err(type_err(s, "`overlay` or `world`", v)),
         };
-        self.names.insert(name.to_string(), self.objects.len());
-        self.objects.push(Object { outline, pin, overlay, ..Object::new(shape, state) });
+        let i = self.objects.len();
+        self.names.insert(name.to_string(), i);
+        self.objects.push(Object { outline, pin, overlay, parent: self.parent, ..Object::new(shape, state) });
+        self.place(i, &p, at.is_some() && !matches!(head.name.as_str(), "arrow" | "line"))
+    }
+
+    /// An object by name, preferring the current component's own parts.
+    fn lookup(&self, name: &str) -> Option<usize> {
+        self.names.get(&format!("{}{name}", self.prefix)).or_else(|| self.names.get(name)).copied()
+    }
+
+    /// Bounding box (center, half size) of object `i` in its parent's frame.
+    /// Rotation is ignored.
+    fn local_box(&self, i: usize) -> Option<(Vec2, Vec2)> {
+        let o = &self.objects[i];
+        let s = &o.state;
+        let (c, h) = match &o.shape {
+            Shape::Rect { size, .. } | Shape::Image { size, .. } => (Vec2::ZERO, *size / 2.0),
+            Shape::Circle { radius } => (Vec2::ZERO, Vec2::splat(*radius)),
+            Shape::Arrow { to, width, .. } => (*to / 2.0, to.abs() / 2.0 + Vec2::splat(width / 2.0)),
+            Shape::Typst { source, align } => {
+                let l = crowmation_text::layout(source).ok()?;
+                let (w, h) = (l.width as f32, l.height as f32);
+                (Vec2::new((0.5 - align) * w, 0.0), Vec2::new(w, h) / 2.0)
+            }
+            Shape::Model { size, .. } => (Vec2::ZERO, size.truncate() / 2.0),
+            Shape::Group => {
+                let boxes: Vec<_> = (i + 1..self.objects.len()).filter(|&j| self.objects[j].parent == Some(i)).filter_map(|j| self.local_box(j)).collect();
+                let lo = boxes.iter().map(|(c, h)| c - h).reduce(Vec2::min)?;
+                let hi = boxes.iter().map(|(c, h)| c + h).reduce(Vec2::max)?;
+                ((lo + hi) / 2.0, (hi - lo) / 2.0)
+            }
+            Shape::Mesh { .. } | Shape::Camera { .. } => return None,
+        };
+        Some((s.pos + c * s.scale, h * s.scale))
+    }
+
+    /// Origin and scale of the frame the children of `parent` live in.
+    fn frame(&self, parent: Option<usize>) -> (Vec2, f32) {
+        match parent {
+            None => (Vec2::ZERO, 1.0),
+            Some(p) => {
+                let (o, k) = self.frame(self.objects[p].parent);
+                let s = &self.objects[p].state;
+                (o + s.pos * k, k * s.scale)
+            }
+        }
+    }
+
+    /// Put object `i` next to another one: `below title gap 20`.
+    fn place(&mut self, i: usize, p: &Props, at_given: bool) -> R<()> {
+        let set: Vec<&(String, Val, Span)> = ["below", "above", "left_of", "right_of"].iter().filter_map(|d| p.get(d)).collect();
+        let Some(first) = set.first() else {
+            return match p.get("gap") {
+                Some((_, _, s)) => Err(Diag::new(s.clone(), "`gap` goes with `below`, `above`, `left_of` or `right_of`")),
+                None => Ok(()),
+            };
+        };
+        let (dir, val, span) = (first.0.as_str(), &first.1, &first.2);
+        if set.len() > 1 {
+            return Err(Diag::new(set[1].2.clone(), "use only one of `below`, `above`, `left_of` and `right_of`"));
+        }
+        if at_given {
+            return Err(Diag::new(span.clone(), format!("`at` and `{dir}` both place the object; use one")));
+        }
+        let Val::Word(target) = val else { return Err(type_err(span, "an object name", val)) };
+        let t = self.lookup(target).ok_or_else(|| Diag::new(span.clone(), format!("no object named `{target}`")))?;
+        let no_size = |n: &str| Diag::new(span.clone(), format!("`{n}` has no size to place against"));
+        let (tc, th) = self.local_box(t).ok_or_else(|| no_size(target))?;
+        let (to, tk) = self.frame(self.objects[t].parent);
+        let (tc, th) = (to + tc * tk, th * tk);
+        let gap = p.num("gap", Dim::None)?.unwrap_or(24.0) as f32;
+        let saved = std::mem::take(&mut self.objects[i].state.pos);
+        let own = self.local_box(i);
+        self.objects[i].state.pos = saved;
+        let (oc, oh) = own.ok_or_else(|| no_size("this object"))?;
+        let (fo, fk) = self.frame(self.objects[i].parent);
+        let wh = oh * fk;
+        let want = match dir {
+            "below" => Vec2::new(tc.x, tc.y + th.y + gap + wh.y),
+            "above" => Vec2::new(tc.x, tc.y - th.y - gap - wh.y),
+            "right_of" => Vec2::new(tc.x + th.x + gap + wh.x, tc.y),
+            _ => Vec2::new(tc.x - th.x - gap - wh.x, tc.y),
+        };
+        self.objects[i].state.pos = (want - fo) / fk - oc;
         Ok(())
     }
 
@@ -512,8 +615,7 @@ impl<'a> Compiler<'a> {
     /// `model router "models/router.glb" size 600`: a group object plus one
     /// object per glTF part, named `router.<part>`.
     fn model(&mut self, head: &Word, name: &str, list: &[Prop]) -> R<()> {
-        let allowed = ["content", "size", "z", "outline", "outline_width", "at", "rotation", "scale", "opacity"];
-        let p = self.props(list, &allowed, "model")?;
+        let p = self.props(list, &props_of("model"), "model")?;
         let (rel, span) = p.str("content")?.ok_or_else(|| Diag::new(head.span.clone(), "`model` needs a .glb file path"))?;
         let path = self.asset(&rel, &["glb"]).map_err(|m| Diag::new(span.clone(), m))?;
         let mesh = crowmation_mesh::load(&path).map_err(|m| Diag::new(span, m))?;
@@ -522,11 +624,12 @@ impl<'a> Compiler<'a> {
             color: p.color("outline")?.unwrap_or([0.05, 0.06, 0.08, 1.0]),
             width: p.num("outline_width", Dim::None)?.unwrap_or(2.0) as f32,
         };
-        let state = State { pos: self.origin + p.vec2("at")?.unwrap_or_default(), ..self.common_state(&p)? };
+        let state = State { pos: p.vec2("at")?.unwrap_or_default(), ..self.common_state(&p)? };
         let unit = size / mesh.extent.max_element().max(1e-9);
         let model = self.objects.len();
         self.names.insert(name.to_string(), model);
-        self.objects.push(Object::new(Shape::Model { unit }, state));
+        let shape = Shape::Model { unit, size: mesh.extent * unit, section_axis: 1 };
+        self.objects.push(Object { parent: self.parent, ..Object::new(shape, state) });
         let mut parts = Vec::new();
         for (i, part) in mesh.parts.iter().enumerate() {
             let c = part.center * unit;
@@ -547,7 +650,7 @@ impl<'a> Compiler<'a> {
         if self.objects.iter().any(|o| matches!(o.shape, Shape::Camera { .. })) {
             return Err(Diag::new(head.span.clone(), "a scene can only have one camera"));
         }
-        let p = self.props(list, &["fov", "at", "z", "rotation", "scale"], "camera")?;
+        let p = self.props(list, &props_of("camera"), "camera")?;
         let fov = p.num("fov", Dim::Angle)?.unwrap_or(30f64.to_radians());
         if !(0.01..3.0).contains(&fov) {
             return Err(Diag::new(p.get("fov").unwrap().2.clone(), "fov must be between 1deg and 170deg"));
@@ -570,73 +673,112 @@ impl<'a> Compiler<'a> {
         resolve_asset(dir, root, rel, exts)
     }
 
-    fn instance(&mut self, head: &Word, target: &Path, list: &[Prop]) -> R<()> {
+    /// A component instance: a group object whose children are the
+    /// component's objects. Its actions run from the current point in time.
+    fn instance(&mut self, timing: Option<&Timing>, head: &Word, target: &Path, list: &[Prop]) -> R<()> {
         let comp = &self.comps[&head.name];
         let (file, params, body) = (comp.file, comp.params, comp.body);
         if self.stack.contains(&head.name) {
             return Err(Diag::new(head.span.clone(), format!("component `{}` uses itself, which is not allowed", head.name)));
         }
         let name = self.decl_name(target)?;
-        let allowed: Vec<&str> = params.iter().map(|p| p.name.as_str()).chain(["at"]).collect();
+        let place = ["at", "rotation", "scale", "opacity", "z"];
+        let allowed: Vec<&str> = params.iter().map(|p| p.name.as_str()).chain(place).chain(LAYOUT.iter().copied()).collect();
         let p = self.props(list, &allowed, &head.name)?;
         if let Some(m) = params.iter().find(|w| p.get(&w.name).is_none()) {
             return Err(Diag::new(head.span.clone(), format!("`{}` needs `{}`", head.name, m.name)));
         }
-        let at = p.vec2("at")?.unwrap_or(Vec2::ZERO);
-        let env: HashMap<String, Val> = p.0.into_iter().filter(|(k, ..)| k != "at").map(|(k, v, _)| (k, v)).collect();
+        let at = p.vec2("at")?;
+        let state = State { pos: at.unwrap_or_default(), ..self.common_state(&p)? };
+        let group = self.objects.len();
+        self.names.insert(name.clone(), group);
+        self.objects.push(Object { parent: self.parent, ..Object::new(Shape::Group, state) });
+        let skip: Vec<&str> = place.iter().chain(LAYOUT).copied().collect();
+        let env: HashMap<String, Val> = p.0.iter().filter(|(k, ..)| !skip.contains(&k.as_str())).map(|(k, v, _)| (k.clone(), v.clone())).collect();
 
+        // The component's own actions start now, or at the instance's timing.
+        let start = match timing {
+            Some(t) => {
+                let s = self.start_time(Some(t), head, 0.0)?;
+                self.group = (s, s);
+                s
+            }
+            None => self.group.1,
+        };
         let saved = (
             std::mem::replace(&mut self.file, file),
             std::mem::replace(&mut self.env, env),
             std::mem::replace(&mut self.prefix, format!("{name}.")),
-            self.origin,
+            std::mem::replace(&mut self.parent, Some(group)),
+            std::mem::replace(&mut self.base, start),
         );
-        self.origin += at;
         self.stack.push(head.name.clone());
         self.block(body);
         self.stack.pop();
-        (self.file, self.env, self.prefix, self.origin) = saved;
-        Ok(())
+        (self.file, self.env, self.prefix, self.parent, self.base) = saved;
+        self.place(group, &p, at.is_some())
+    }
+
+    /// What an action's target names: one object (or group), or every
+    /// element of a declared list like `cell` for `cell[0]`, `cell[1]`, ...
+    fn targets(&self, name: &str) -> Option<Vec<usize>> {
+        if let Some(o) = self.lookup(name) {
+            return Some(vec![o]);
+        }
+        let prefixed = format!("{}{name}[", self.prefix);
+        let mut items: Vec<usize> = self
+            .names
+            .iter()
+            .filter(|(k, _)| k.strip_prefix(&prefixed).is_some_and(|rest| rest.ends_with(']') && !rest.contains('.')))
+            .map(|(_, &v)| v)
+            .collect();
+        if items.is_empty() && !self.prefix.is_empty() {
+            let plain = format!("{name}[");
+            items = self.names.iter().filter(|(k, _)| k.strip_prefix(&plain).is_some_and(|r| r.ends_with(']') && !r.contains('.'))).map(|(_, &v)| v).collect();
+        }
+        items.sort();
+        (!items.is_empty()).then_some(items)
+    }
+
+    /// Direct children of a group, in declaration order.
+    fn children(&self, i: usize) -> Vec<usize> {
+        (i + 1..self.objects.len()).filter(|&j| self.objects[j].parent == Some(i)).collect()
+    }
+
+    /// The drawn objects under `i` (itself if it is not a group).
+    fn leaves(&self, i: usize) -> Vec<usize> {
+        match self.objects[i].shape {
+            Shape::Group | Shape::Model { .. } => self.children(i).into_iter().flat_map(|c| self.leaves(c)).collect(),
+            _ => vec![i],
+        }
     }
 
     fn action(&mut self, timing: Option<&Timing>, head: &Word, target: &Path, list: &[Prop]) -> R<()> {
         let name = self.path_name(target)?;
-        // A component instance name animates all of its parts.
-        let objects: Vec<usize> = match self.names.get(&name) {
-            Some(&o) => vec![o],
-            None => {
-                let prefix = format!("{name}.");
-                let mut parts: Vec<usize> = self.names.iter().filter(|(k, _)| k.starts_with(&prefix)).map(|(_, &v)| v).collect();
-                parts.sort();
-                if parts.is_empty() {
-                    return Err(Diag::new(target.span.clone(), format!("no object named `{name}`")));
-                }
-                parts
-            }
-        };
-        let allowed: &[&str] = match head.name.as_str() {
-            "move" | "rotate" | "scale" | "orbit" | "tilt" => ACTION_PROPS,
-            "explode" => &["by", "duration", "ease"],
-            "fade" | "color" => &["to", "duration", "ease"],
-            _ => &["duration", "ease"],
-        };
-        let p = self.props(list, allowed, &head.name)?;
-        let group_ok = matches!(head.name.as_str(), "fade" | "fade_in" | "fade_out" | "color") || (head.name == "move" && p.get("by").is_some());
-        if objects.len() > 1 && !group_ok {
-            return Err(Diag::new(
-                head.span.clone(),
-                format!("`{name}` is a component instance; groups support fades, color and `move ... by`, so `{}` needs a single part like `{name}.<part>`", head.name),
-            ));
-        }
-        let duration = p.num("duration", Dim::Time)?.unwrap_or(1.0);
+        let found = self.targets(&name).ok_or_else(|| Diag::new(target.span.clone(), format!("no object named `{name}`")))?;
+        let h = head.name.as_str();
+        let p = self.props(list, &props_of(h), h)?;
+        let duration = p.num("duration", Dim::Time)?.unwrap_or(if matches!(h, "highlight" | "shake") { 0.6 } else { 1.0 });
         if duration < 0.0 {
             return Err(Diag::new(p.get("duration").unwrap().2.clone(), "duration cannot be negative"));
         }
-        let ease = p.ease()?;
-        let to_or_by = |ok: bool| {
-            if ok { Ok(()) } else { Err(Diag::new(head.span.clone(), format!("`{}` needs exactly one of `to` or `by`", head.name))) }
+        let stagger = p.num("stagger", Dim::Time)?;
+        if stagger.is_some_and(|s| s < 0.0) {
+            return Err(Diag::new(p.get("stagger").unwrap().2.clone(), "stagger cannot be negative"));
+        }
+        // With `stagger`, a single group staggers over its parts.
+        let members = match (&found[..], stagger) {
+            ([g], Some(_)) if matches!(self.objects[*g].shape, Shape::Group) => self.children(*g),
+            _ => found,
         };
-        let need_to = || Diag::new(head.span.clone(), format!("`{}` needs `to`", head.name));
+        let ease = p.ease()?;
+        let to_or_by = |ok: bool| if ok { Ok(()) } else { Err(Diag::new(head.span.clone(), format!("`{h}` needs exactly one of `to` or `by`"))) };
+        let need_to = || Diag::new(head.span.clone(), format!("`{h}` needs `to`"));
+        let num_to_by = |d: Dim| -> R<(Option<f32>, Option<f32>)> {
+            let (to, by) = (p.num("to", d)?, p.num("by", d)?);
+            to_or_by(to.is_some() != by.is_some())?;
+            Ok((to.map(|v| v as f32), by.map(|v| v as f32)))
+        };
         // A 3D move also animates depth.
         let mut depth = None;
         let mut point = |k: &str| -> R<Option<Vec2>> {
@@ -648,59 +790,94 @@ impl<'a> Compiler<'a> {
                 _ => p.vec2(k),
             }
         };
-        let mut changes = Vec::new();
-        let change = match head.name.as_str() {
+        // What happens to each member: changes on the member itself, and on
+        // its drawn objects (colors live on shapes, not on groups).
+        let mut own: Vec<Change> = Vec::new();
+        let mut on_leaves: Vec<Change> = Vec::new();
+        match h {
             "move" => {
                 let (to, by) = (point("to")?, point("by")?);
                 to_or_by(to.is_some() != by.is_some())?;
                 if let Some((is_to, z)) = depth {
-                    changes.push(Change::Z { to: is_to.then_some(z), by: (!is_to).then_some(z) });
+                    own.push(Change::Z { to: is_to.then_some(z), by: (!is_to).then_some(z) });
                 }
-                Change::Move { to, by }
+                own.push(Change::Move { to, by });
             }
             "orbit" | "tilt" => {
-                let (to, by) = (p.num("to", Dim::Angle)?, p.num("by", Dim::Angle)?);
-                to_or_by(to.is_some() != by.is_some())?;
-                let axis = (head.name == "orbit") as usize;
-                Change::Turn { axis, to: to.map(|v| v as f32), by: by.map(|v| v as f32) }
+                let (to, by) = num_to_by(Dim::Angle)?;
+                own.push(Change::Turn { axis: (h == "orbit") as usize, to, by });
+            }
+            "rotate" => {
+                let (to, by) = num_to_by(Dim::Angle)?;
+                own.push(Change::Rotate { to, by });
+            }
+            "scale" => {
+                let (to, by) = num_to_by(Dim::None)?;
+                own.push(Change::Scale { to, by });
+            }
+            "fade" => own.push(Change::Fade(p.num("to", Dim::None)?.ok_or_else(need_to)? as f32)),
+            "fade_in" => own.push(Change::FadeIn),
+            "fade_out" => own.push(Change::Fade(0.0)),
+            "color" => on_leaves.push(Change::Color(p.color("to")?.ok_or_else(need_to)?)),
+            "highlight" => {
+                own.push(Change::Pulse(p.num("scale", Dim::None)?.unwrap_or(1.12) as f32));
+                if let Some(c) = p.color("color")? {
+                    on_leaves.push(Change::Flash(c));
+                }
+            }
+            "shake" => {
+                let times = p.num("times", Dim::None)?.unwrap_or(3.0);
+                if !(1.0..=50.0).contains(&times) || times.fract() != 0.0 {
+                    return Err(Diag::new(p.get("times").unwrap().2.clone(), "`times` must be a whole number from 1 to 50"));
+                }
+                own.push(Change::Shake { amp: p.num("by", Dim::None)?.unwrap_or(12.0) as f32, times: times as u32 });
+            }
+            "section" => {
+                let (to, by) = num_to_by(Dim::None)?;
+                let axis = match p.get("axis") {
+                    None => 1,
+                    Some((_, Val::Word(w), _)) if w == "x" => 0,
+                    Some((_, Val::Word(w), _)) if w == "y" => 1,
+                    Some((_, Val::Word(w), _)) if w == "z" => 2,
+                    Some((_, v, s)) => return Err(type_err(s, "`x`, `y` or `z`", v)),
+                };
+                for &m in &members {
+                    let Shape::Model { section_axis, .. } = &mut self.objects[m].shape else {
+                        return Err(Diag::new(target.span.clone(), format!("`{name}` is not a model")));
+                    };
+                    *section_axis = axis;
+                }
+                own.push(Change::Section { to, by });
             }
             "explode" => {
-                let Some(parts) = objects.first().and_then(|o| self.models.get(o)) else {
-                    return Err(Diag::new(target.span.clone(), format!("`{name}` is not a model")));
-                };
                 let k = p.num("by", Dim::None)?.ok_or_else(|| Diag::new(head.span.clone(), "`explode` needs `by`, like `by 0.5`"))? as f32;
-                // Each part moves away from the model center by `k` times its offset.
-                let parts = parts.clone();
+                let mut moves = Vec::new();
+                for &m in &members {
+                    let parts = self.models.get(&m).ok_or_else(|| Diag::new(target.span.clone(), format!("`{name}` is not a model")))?;
+                    // Each part moves away from the model center by `k` times its offset.
+                    moves.extend(parts.iter().map(|(o, c)| (*o, *c * k)));
+                }
                 let start = self.start_time(timing, head, duration)?;
-                for (o, c) in parts {
-                    let c = c * k;
+                for (o, c) in moves {
                     for change in [Change::Move { to: None, by: Some(c.truncate()) }, Change::Z { to: None, by: Some(c.z) }] {
                         self.pending.push(Pending { object: o, start, end: start + duration, ease, change });
                     }
                 }
                 return Ok(());
             }
-            "rotate" => {
-                let (to, by) = (p.num("to", Dim::Angle)?, p.num("by", Dim::Angle)?);
-                to_or_by(to.is_some() != by.is_some())?;
-                Change::Rotate { to: to.map(|v| v as f32), by: by.map(|v| v as f32) }
+            _ => unreachable!("ACTIONS and this match agree"),
+        }
+        let step = stagger.unwrap_or(0.0);
+        let start = self.start_time(timing, head, duration + step * members.len().saturating_sub(1) as f64)?;
+        for (k, &m) in members.iter().enumerate() {
+            let t = start + step * k as f64;
+            for change in &own {
+                self.pending.push(Pending { object: m, start: t, end: t + duration, ease, change: change.clone() });
             }
-            "scale" => {
-                let (to, by) = (p.num("to", Dim::None)?, p.num("by", Dim::None)?);
-                to_or_by(to.is_some() != by.is_some())?;
-                Change::Scale { to: to.map(|v| v as f32), by: by.map(|v| v as f32) }
-            }
-            "fade" => Change::Fade(p.num("to", Dim::None)?.ok_or_else(need_to)? as f32),
-            "fade_in" => Change::FadeIn,
-            "fade_out" => Change::Fade(0.0),
-            _ => Change::Color(p.color("to")?.ok_or_else(need_to)?),
-        };
-
-        changes.push(change);
-        let start = self.start_time(timing, head, duration)?;
-        for object in objects {
-            for change in &changes {
-                self.pending.push(Pending { object, start, end: start + duration, ease, change: change.clone() });
+            for leaf in self.leaves(m) {
+                for change in &on_leaves {
+                    self.pending.push(Pending { object: leaf, start: t, end: t + duration, ease, change: change.clone() });
+                }
             }
         }
         Ok(())
@@ -709,7 +886,8 @@ impl<'a> Compiler<'a> {
     /// Start of an action from its timing; updates the current group.
     fn start_time(&mut self, timing: Option<&Timing>, head: &Word, duration: f64) -> R<f64> {
         let start = match timing {
-            Some(Timing::At(e)) => self.num(e, Dim::Time)?,
+            // Inside a component, `at` counts from when the instance's actions begin.
+            Some(Timing::At(e)) => self.base + self.num(e, Dim::Time)?,
             Some(Timing::After(Some(e))) => self.group.1 + self.num(e, Dim::Time)?,
             Some(Timing::With) => self.group.0,
             None | Some(Timing::After(None)) => self.group.1,
@@ -748,21 +926,55 @@ impl<'a> Compiler<'a> {
             objects: self.objects,
             tracks: Vec::new(),
         };
-        // ponytail: evaluates the partial timeline per action (quadratic); track per-property state if compile time shows up
+        // Each action starts from its object's state at its start time: the
+        // object's tracks that began by then, applied in start order.
+        let mut by_object: Vec<Vec<Track>> = vec![Vec::new(); tl.objects.len()];
         for p in self.pending {
-            let s = tl.eval(p.start)[p.object];
-            let anim = match p.change {
-                Change::Move { to, by } => Anim::Move { from: s.pos, to: to.unwrap_or_else(|| s.pos + by.unwrap()) },
-                Change::Rotate { to, by } => Anim::Rotate { from: s.rotation, to: to.unwrap_or_else(|| s.rotation + by.unwrap()) },
-                Change::Scale { to, by } => Anim::Scale { from: s.scale, to: to.unwrap_or_else(|| s.scale * by.unwrap()) },
-                Change::Fade(to) => Anim::Fade { from: s.opacity, to },
-                Change::FadeIn => Anim::Fade { from: s.opacity, to: 1.0 },
-                Change::Color(to) => Anim::Color { from: s.color, to },
-                Change::Z { to, by } => Anim::Z { from: s.z, to: to.unwrap_or_else(|| s.z + by.unwrap()) },
-                Change::Turn { axis: 0, to, by } => Anim::Tilt { from: s.turn.x, to: to.unwrap_or_else(|| s.turn.x + by.unwrap()) },
-                Change::Turn { to, by, .. } => Anim::Orbit { from: s.turn.y, to: to.unwrap_or_else(|| s.turn.y + by.unwrap()) },
+            let o = p.object;
+            let mut earlier: Vec<&Track> = by_object[o].iter().filter(|t| t.start <= p.start).collect();
+            earlier.sort_by(|a, b| a.start.total_cmp(&b.start));
+            let mut s = tl.objects[o].state;
+            for tr in earlier {
+                tr.apply(&mut s, p.start);
+            }
+            let track = |start: f64, end: f64, anim: Anim| Track { object: o, start, end, ease: p.ease, anim };
+            let (start, end, mid) = (p.start, p.end, (p.start + p.end) / 2.0);
+            let tracks = match p.change {
+                Change::Move { to, by } => vec![track(start, end, Anim::Move { from: s.pos, to: to.unwrap_or_else(|| s.pos + by.unwrap()) })],
+                Change::Rotate { to, by } => vec![track(start, end, Anim::Rotate { from: s.rotation, to: to.unwrap_or_else(|| s.rotation + by.unwrap()) })],
+                Change::Scale { to, by } => vec![track(start, end, Anim::Scale { from: s.scale, to: to.unwrap_or_else(|| s.scale * by.unwrap()) })],
+                Change::Fade(to) => vec![track(start, end, Anim::Fade { from: s.opacity, to })],
+                Change::FadeIn => vec![track(start, end, Anim::Fade { from: s.opacity, to: 1.0 })],
+                Change::Color(to) => vec![track(start, end, Anim::Color { from: s.color, to })],
+                Change::Z { to, by } => vec![track(start, end, Anim::Z { from: s.z, to: to.unwrap_or_else(|| s.z + by.unwrap()) })],
+                Change::Turn { axis: 0, to, by } => vec![track(start, end, Anim::Tilt { from: s.turn.x, to: to.unwrap_or_else(|| s.turn.x + by.unwrap()) })],
+                Change::Turn { to, by, .. } => vec![track(start, end, Anim::Orbit { from: s.turn.y, to: to.unwrap_or_else(|| s.turn.y + by.unwrap()) })],
+                Change::Section { to, by } => {
+                    vec![track(start, end, Anim::Section { from: s.section, to: to.unwrap_or_else(|| s.section + by.unwrap()).clamp(0.0, 1.0) })]
+                }
+                Change::Pulse(k) => vec![
+                    track(start, mid, Anim::Scale { from: s.scale, to: s.scale * k }),
+                    track(mid, end, Anim::Scale { from: s.scale * k, to: s.scale }),
+                ],
+                Change::Flash(c) => vec![track(start, mid, Anim::Color { from: s.color, to: c }), track(mid, end, Anim::Color { from: c, to: s.color })],
+                Change::Shake { amp, times } => {
+                    // Out to one side, across to the other, `times` times, then back home.
+                    let n = 2 * times + 1;
+                    let dt = (end - start) / n as f64;
+                    let offset = |j: u32| if j == n { 0.0 } else if j % 2 == 1 { amp } else { -amp };
+                    (0..n)
+                        .map(|j| {
+                            let from = if j == 0 { 0.0 } else { offset(j) };
+                            let (a, b) = (start + dt * j as f64, start + dt * (j + 1) as f64);
+                            Track { object: o, start: a, end: b, ease: Ease::InOut, anim: Anim::Move { from: s.pos + Vec2::new(from, 0.0), to: s.pos + Vec2::new(offset(j + 1), 0.0) } }
+                        })
+                        .collect()
+                }
             };
-            tl.tracks.push(Track { object: p.object, start: p.start, end: p.end, ease: p.ease, anim });
+            for t in tracks {
+                by_object[o].push(t.clone());
+                tl.tracks.push(t);
+            }
         }
         tl
     }
@@ -794,8 +1006,14 @@ impl<'a> Compiler<'a> {
             },
             Expr::List(items, _) => Val::List(items.iter().map(|e| self.eval(e)).collect::<R<_>>()?),
             Expr::Index(list, i, s) => {
-                let Val::List(items) = self.eval(list)? else {
-                    return Err(type_err(&list.span(), "a list", &self.eval(list)?));
+                let items = match self.eval(list)? {
+                    Val::List(items) => items,
+                    // `cell[3]` naming an object, as in `below cell[3]`.
+                    Val::Word(w) => {
+                        let n = self.num(i, Dim::None)?;
+                        return Ok(Val::Word(format!("{w}[{n}]")));
+                    }
+                    v => return Err(type_err(&list.span(), "a list", &v)),
                 };
                 let n = self.num(i, Dim::None)?;
                 if n < 0.0 || n.fract() != 0.0 || n as usize >= items.len() {
@@ -803,6 +1021,7 @@ impl<'a> Compiler<'a> {
                 }
                 items[n as usize].clone()
             }
+            Expr::Call(f, args, s) => self.call(f, args, s)?,
             Expr::Neg(inner, s) => match self.eval(inner)? {
                 Val::Num(n, d) => Val::Num(-n, d),
                 Val::Vec2(x, y) => Val::Vec2(-x, -y),
@@ -829,6 +1048,180 @@ impl<'a> Compiler<'a> {
     }
 }
 
+impl Compiler<'_> {
+    /// Built in functions. Data files are read relative to the current file,
+    /// must be inside the scene folder and at most MAX_DATA_FILE bytes.
+    fn call(&self, f: &Word, args: &[Expr], span: &Span) -> R<Val> {
+        let name = f.name.as_str();
+        let arity = |range: std::ops::RangeInclusive<usize>, usage: &str| {
+            if range.contains(&args.len()) { Ok(()) } else { Err(Diag::new(span.clone(), format!("usage: `{usage}`"))) }
+        };
+        let whole = |i: usize| -> R<usize> {
+            let n = self.num(&args[i], Dim::None)?;
+            if n < 0.0 || n.fract() != 0.0 {
+                return Err(Diag::new(args[i].span(), format!("expected a whole number, got {n}")));
+            }
+            Ok(n as usize)
+        };
+        let list = |i: usize| match self.eval(&args[i])? {
+            Val::List(l) => Ok(l),
+            v => Err(type_err(&args[i].span(), "a list", &v)),
+        };
+        let string = |i: usize| match self.eval(&args[i])? {
+            Val::Str(s) => Ok(s),
+            v => Err(type_err(&args[i].span(), "a string", &v)),
+        };
+        let text = |v: &Val, s: &Span| match v {
+            Val::Str(t) => Ok(t.clone()),
+            Val::Num(n, Dim::None) => Ok(fmt_num(*n)),
+            v => Err(type_err(s, "a string or number", v)),
+        };
+        Ok(match name {
+            "len" => {
+                arity(1..=1, "len(list or string)")?;
+                match self.eval(&args[0])? {
+                    Val::List(l) => Val::Num(l.len() as f64, Dim::None),
+                    Val::Str(s) => Val::Num(s.chars().count() as f64, Dim::None),
+                    v => return Err(type_err(&args[0].span(), "a list or string", &v)),
+                }
+            }
+            "floor" | "ceil" | "round" | "abs" => {
+                arity(1..=1, &format!("{name}(number)"))?;
+                let Val::Num(n, d) = self.eval(&args[0])? else { return Err(type_err(&args[0].span(), "a number", &self.eval(&args[0])?)) };
+                let r = match name {
+                    "floor" => n.floor(),
+                    "ceil" => n.ceil(),
+                    "round" => n.round(),
+                    _ => n.abs(),
+                };
+                Val::Num(r, d)
+            }
+            "min" | "max" | "mod" => {
+                arity(2..=2, &format!("{name}(a, b)"))?;
+                match (self.eval(&args[0])?, self.eval(&args[1])?) {
+                    (Val::Num(a, d), Val::Num(b, e)) if name == "mod" && e == Dim::None && b != 0.0 => Val::Num(a.rem_euclid(b), d),
+                    (Val::Num(a, d), Val::Num(b, e)) if name != "mod" && d == e => Val::Num(if name == "min" { a.min(b) } else { a.max(b) }, d),
+                    (a, b) => return Err(Diag::new(span.clone(), format!("cannot compute {name} of {} and {}", describe(&a), describe(&b)))),
+                }
+            }
+            "str" => {
+                arity(1..=1, "str(number)")?;
+                Val::Str(text(&self.eval(&args[0])?, &args[0].span())?)
+            }
+            "hex" => {
+                arity(1..=2, "hex(number, digits)")?;
+                let n = whole(0)?;
+                let w = if args.len() == 2 { whole(1)?.min(16) } else { 0 };
+                Val::Str(format!("{n:0w$x}"))
+            }
+            "join" => {
+                arity(2..=2, "join(list, separator)")?;
+                let sep = string(1)?;
+                let parts = list(0)?.iter().map(|v| text(v, &args[0].span())).collect::<R<Vec<_>>>()?;
+                Val::Str(parts.join(&sep))
+            }
+            "slice" => {
+                arity(2..=3, "slice(list, start, count)")?;
+                let l = list(0)?;
+                let start = whole(1)?.min(l.len());
+                let end = if args.len() == 3 { start.saturating_add(whole(2)?).min(l.len()) } else { l.len() };
+                Val::List(l[start..end].to_vec())
+            }
+            "ascii" => {
+                arity(1..=1, "ascii(bytes)")?;
+                let mut out = String::new();
+                for v in list(0)? {
+                    let b = match &v {
+                        Val::Str(h) => u8::from_str_radix(h, 16).ok(),
+                        Val::Num(n, Dim::None) if (0.0..256.0).contains(n) => Some(*n as u8),
+                        _ => None,
+                    }
+                    .ok_or_else(|| Diag::new(args[0].span(), format!("expected bytes like \"41\", found {}", describe(&v))))?;
+                    out.push(if (0x20..0x7f).contains(&b) { b as char } else { '.' });
+                }
+                Val::Str(out)
+            }
+            "bytes" => {
+                arity(1..=3, "bytes(\"file\", offset, count)")?;
+                let data = self.read_data(&string(0)?, &[], &args[0].span())?;
+                let start = if args.len() >= 2 { whole(1)?.min(data.len()) } else { 0 };
+                let end = if args.len() == 3 { start.saturating_add(whole(2)?).min(data.len()) } else { data.len() };
+                if end - start > MAX_LIST {
+                    return Err(Diag::new(span.clone(), format!("more than {MAX_LIST} bytes; pick a range with offset and count")));
+                }
+                Val::List(data[start..end].iter().map(|b| Val::Str(format!("{b:02x}"))).collect())
+            }
+            "file" => {
+                arity(1..=1, "file(\"name\")")?;
+                let data = self.read_data(&string(0)?, &[], &args[0].span())?;
+                let t = String::from_utf8(data).map_err(|_| Diag::new(args[0].span(), "the file is not UTF-8 text"))?;
+                if t.len() > MAX_TEXT_LEN {
+                    return Err(Diag::new(args[0].span(), format!("the file is longer than {MAX_TEXT_LEN} bytes")));
+                }
+                Val::Str(t)
+            }
+            "table" => {
+                arity(1..=1, "table(\"data.csv\")")?;
+                let rel = string(0)?;
+                let data = self.read_data(&rel, &["csv", "tsv"], &args[0].span())?;
+                let t = String::from_utf8(data).map_err(|_| Diag::new(args[0].span(), "the file is not UTF-8 text"))?;
+                let rows = parse_csv(&t, if rel.ends_with(".tsv") { '\t' } else { ',' });
+                if rows.iter().map(Vec::len).sum::<usize>() > MAX_LIST {
+                    return Err(Diag::new(span.clone(), format!("more than {MAX_LIST} cells")));
+                }
+                Val::List(rows.into_iter().map(|r| Val::List(r.into_iter().map(Val::Str).collect())).collect())
+            }
+            _ => {
+                let msg = match FUNCTIONS.iter().min_by_key(|w| edit_distance(name, w)).filter(|w| edit_distance(name, w) <= 2) {
+                    Some(w) => format!("unknown function `{name}`, did you mean `{w}`?"),
+                    None => format!("unknown function `{name}`, expected one of: {}", FUNCTIONS.join(", ")),
+                };
+                return Err(Diag::new(f.span.clone(), msg));
+            }
+        })
+    }
+
+    fn read_data(&self, rel: &str, exts: &[&str], span: &Span) -> R<Vec<u8>> {
+        let path = self.asset(rel, exts).map_err(|m| Diag::new(span.clone(), m))?;
+        let len = std::fs::metadata(&path).map_err(|e| Diag::new(span.clone(), format!("`{rel}`: {e}")))?.len();
+        if len > MAX_DATA_FILE {
+            return Err(Diag::new(span.clone(), format!("`{rel}` is larger than {} KiB", MAX_DATA_FILE / 1024)));
+        }
+        let data = std::fs::read(&path).map_err(|e| Diag::new(span.clone(), format!("`{rel}`: {e}")))?;
+        self.deps.borrow_mut().push(path.into());
+        Ok(data)
+    }
+}
+
+/// `3` not `3.0`, `0.25` as is.
+fn fmt_num(n: f64) -> String {
+    if n.fract() == 0.0 && n.abs() < 1e15 { format!("{}", n as i64) } else { format!("{n}") }
+}
+
+/// Rows of fields. Quoted fields may contain the separator and `""` for a
+/// quote; a field cannot span lines.
+fn parse_csv(text: &str, sep: char) -> Vec<Vec<String>> {
+    let mut rows = Vec::new();
+    for line in text.lines().filter(|l| !l.trim().is_empty()) {
+        let (mut fields, mut cur, mut quoted) = (Vec::new(), String::new(), false);
+        let mut chars = line.chars().peekable();
+        while let Some(c) = chars.next() {
+            match c {
+                '"' if quoted && chars.peek() == Some(&'"') => {
+                    cur.push('"');
+                    chars.next();
+                }
+                '"' => quoted = !quoted,
+                c if c == sep && !quoted => fields.push(std::mem::take(&mut cur)),
+                c => cur.push(c),
+            }
+        }
+        fields.push(cur);
+        rows.push(fields);
+    }
+    rows
+}
+
 fn arith(op: Op, a: &Val, b: &Val) -> Option<Val> {
     use Val::*;
     Some(match (op, a, b) {
@@ -846,6 +1239,32 @@ fn arith(op: Op, a: &Val, b: &Val) -> Option<Val> {
         (Op::Div, Vec2(a, b), Num(k, Dim::None)) => Vec2(a / k, b / k),
         _ => return None,
     })
+}
+
+/// Properties an object or action accepts. The compiler, the reference docs
+/// and the editor all use this one list.
+pub fn props_of(command: &str) -> Vec<&'static str> {
+    let own: &[&str] = match command {
+        "rect" => &["size", "corner", "outline", "outline_width"],
+        "circle" => &["radius", "outline", "outline_width"],
+        "arrow" | "line" => &["from", "to", "width", "head"],
+        "image" => &["content", "size", "width", "outline", "outline_width"],
+        "code" => &["content", "size", "lang", "align"],
+        "text" | "math" => &["content", "size", "align"],
+        "model" => return vec!["content", "size", "z", "outline", "outline_width", "at", "rotation", "scale", "opacity"],
+        "camera" => return vec!["fov", "at", "z", "rotation", "scale"],
+        "move" | "rotate" | "scale" | "orbit" | "tilt" => return ACTION_PROPS.to_vec(),
+        "explode" => return vec!["by", "duration", "ease"],
+        "fade" | "color" => return vec!["to", "duration", "ease", "stagger"],
+        "fade_in" | "fade_out" => return vec!["duration", "ease", "stagger"],
+        "highlight" => return vec!["color", "scale", "duration", "ease", "stagger"],
+        "shake" => return vec!["by", "times", "duration", "stagger"],
+        "section" => return vec!["to", "by", "axis", "duration", "ease"],
+        _ => return Vec::new(),
+    };
+    // Lines are placed by `from`, not `at`.
+    let common: &[&str] = if own.contains(&"from") { &["color", "opacity", "rotation", "scale"] } else { COMMON_PROPS };
+    common.iter().chain(own).chain(PLACE_2D).copied().collect()
 }
 
 /// Levenshtein distance, for "did you mean" suggestions.
@@ -869,7 +1288,10 @@ fn edit_distance(a: &str, b: &str) -> usize {
 fn resolve_asset(dir: &std::path::Path, root: &std::path::Path, rel: &str, exts: &[&str]) -> Result<String, String> {
     let path = dir.join(rel).canonicalize().map_err(|e| format!("cannot read `{rel}`: {e}"))?;
     let ext = path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase);
-    if !path.starts_with(root) || !ext.is_some_and(|e| exts.contains(&e.as_str())) {
+    if !path.starts_with(root) {
+        return Err(format!("`{rel}` must be inside {}", root.display()));
+    }
+    if !exts.is_empty() && !ext.is_some_and(|e| exts.contains(&e.as_str())) {
         return Err(format!("`{rel}` must be a .{} file inside {}", exts.join(" or ."), root.display()));
     }
     Ok(path.to_string_lossy().into_owned())

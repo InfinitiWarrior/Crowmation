@@ -1,5 +1,7 @@
 # Crowmation
 
+[crowmation.com](https://crowmation.com)
+
 A GPU-accelerated animation engine in Rust that turns short scripts in its own
 scene language into 2D and 3D explainer videos.
 
@@ -17,7 +19,14 @@ about 2 seconds on an RTX 4090.
   absolute or relative timing. No unbounded loops, no recursion, no file or
   network access, so every scene terminates and is checked before rendering.
 - **Helpful errors.** The compiler reports as many errors as it can at once,
-  each pointing at the source line.
+  each pointing at the source line, with "did you mean" suggestions.
+- **Layout and effects.** Place objects with `below title` or `right_of box`,
+  animate lists with `stagger`, draw attention with `highlight` and `shake`.
+  Components are groups that move, rotate and scale as one, and can carry
+  their own animations.
+- **Real data.** `bytes("payload.bin")`, `file("exploit.c")` and
+  `table("ports.csv")` read files from the scene's folder; `hexdump` shows
+  bytes with offset and ASCII columns.
 - **Text, code and math** laid out by [Typst](https://typst.app/) and drawn as
   vector outlines, sharp at any size. Code is syntax highlighted. Inter is the
   default font.
@@ -26,19 +35,33 @@ about 2 seconds on an RTX 4090.
 - **Optional 3D.** Load `.glb` models and animate their named parts. 2D and 3D
   share one space and one depth buffer, so 2D objects and 3D parts can pass
   through each other. Flat shading with outlines, a camera that orbits, tilts
-  and zooms, labels pinned to 3D parts, and exploded views.
+  and zooms, labels pinned to 3D parts, exploded views and section cuts.
 - **Fast export.** Frames are converted to video format on the GPU and encoded
-  with NVENC (NVIDIA hardware encoding), falling back to openh264 on machines
-  without it. Frames where nothing changes are not rendered again.
+  with NVENC (NVIDIA hardware encoding). Other machines use openh264 on
+  several cores in parallel. One binary works on both: the NVIDIA libraries
+  are loaded only if present. Frames where nothing changes are not rendered
+  again.
 - **Live preview** with scrubbing and hot reload on save.
 - **Built-in cybersecurity library** (`import "std:cybersec"`): bytes, memory
   rows and grids, HTTP request and response panels, a browser mockup.
 
-## Quick start
+## Install
 
-Requirements: Rust (edition 2024) and a GPU with Vulkan support. NVENC export
-needs an NVIDIA GPU and driver, but not the CUDA toolkit. Linux is the only
-tested platform so far.
+Linux x86_64 with a Vulkan driver:
+
+```sh
+curl -fsSL https://crowmation.com/install.sh | sh
+```
+
+This installs the latest release into `~/.local/bin`. Releases also include
+the VS Code extension (`crowmation.vsix`) and the Neovim files. Or build from
+source with Rust (edition 2024): `cargo install --git
+https://github.com/InfinitiWarrior/Crowmation crowmation`.
+
+NVENC export needs an NVIDIA GPU and driver, but not the CUDA toolkit; other
+machines encode in software. Linux is the only tested platform so far.
+
+## Quick start
 
 ```sh
 # Open a live preview window (reloads when you save the file)
@@ -47,6 +70,12 @@ cargo run --release -p crowmation -- preview examples/showcase.cwm
 # Render to MP4
 cargo run --release -p crowmation -- render examples/showcase.cwm showcase.mp4
 ```
+
+## Documentation
+
+- [Guide](docs/guide.md): writing scenes, from a first shape to 3D
+- [Language reference](docs/reference.md): every keyword, object, action and
+  property, generated from the compiler
 
 ## Commands
 
@@ -198,6 +227,7 @@ model.
 |---|---|
 | `examples/showcase.cwm` | Title card, buffer overflow, 3D router teardown |
 | `examples/buffer_overflow.cwm` | A step-by-step stack buffer overflow |
+| `examples/features.cwm` | Layout, stagger, highlight, shake, groups, a hexdump of a real file |
 | `examples/router.cwm` | 3D model, camera moves, pinned labels, a 2D card passing through 3D parts |
 | `examples/web.cwm` | SQL injection with a browser and request/response panels |
 | `examples/text.cwm` | Text, code, hex dumps and math |
@@ -224,10 +254,17 @@ Run the tests with `cargo test --workspace` (some tests need a GPU).
 Working: the language, 2D, text, code and math, images, 3D models and camera,
 MP4 export, preview with hot reload, editor support for Neovim and VS Code.
 
+Continuous integration (`.github/workflows/ci.yml`) runs the tests and
+renders every example without a GPU, using software Vulkan and openh264.
+
 Planned:
-- Section cutaways for 3D models
-- Language reference docs
-- macOS support
+- Windows and macOS support (NVENC is already looked up under its Windows
+  name, but nothing has been tested there)
+
+## License
+
+Dual licensed under [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE), at
+your option. Contributions are accepted under the same terms.
 
 ## Credits
 

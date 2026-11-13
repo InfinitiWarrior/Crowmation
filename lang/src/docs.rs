@@ -9,6 +9,7 @@ pub enum Kind {
     Action,
     Property,
     Value,
+    Function,
 }
 
 pub const DOCS: &[(&str, Kind, &str)] = &[
@@ -50,8 +51,20 @@ pub const DOCS: &[(&str, Kind, &str)] = &[
     ("orbit", Kind::Action, "`orbit cam by 45deg` or `to`: turn a camera (or model) around the vertical axis."),
     ("tilt", Kind::Action, "`tilt cam to 30deg`: raise the camera to look down (or tilt a model)."),
     ("explode", Kind::Action, "`explode model by 0.5`: move every part away from the model's center."),
+    ("highlight", Kind::Action, "`highlight obj color #ffb347`: draw attention: scale up and back (`scale 1.12` by default), flashing `color` if given. Default duration `600ms`."),
+    ("shake", Kind::Action, "`shake obj by 12 times 3`: move side to side `times` times by `by` pixels, then back. Default duration `600ms`."),
+    ("section", Kind::Action, "`section model to 0.5 axis y`: cut the model away, keeping that fraction (1 keeps all). `axis x` cuts from the right, `y` from the top (default), `z` from the front."),
     // Properties
     ("to", Kind::Property, "Target value of an action."),
+    ("stagger", Kind::Property, "`fade_in cells stagger 80ms`: start each element (of a list like `cell[0]`, `cell[1]`, ... or the parts of a group) this much after the previous one."),
+    ("align", Kind::Property, "Text, code and math: which edge `at` refers to: `left`, `center` (default) or `right`."),
+    ("below", Kind::Property, "`below title`: place the object under another one, centered, `gap` pixels apart (default 24). Replaces `at`."),
+    ("above", Kind::Property, "`above box`: place the object over another one, centered, `gap` pixels apart."),
+    ("left_of", Kind::Property, "`left_of box`: place the object to the left of another one, centered vertically, `gap` pixels apart."),
+    ("right_of", Kind::Property, "`right_of box`: place the object to the right of another one, centered vertically, `gap` pixels apart."),
+    ("gap", Kind::Property, "Space in pixels for `below`, `above`, `left_of` and `right_of` (default 24)."),
+    ("axis", Kind::Property, "`section`: `x`, `y` (default) or `z`."),
+    ("times", Kind::Property, "`shake`: how many times to go side to side (default 3)."),
     ("by", Kind::Property, "Amount an action changes the value by."),
     ("ease", Kind::Property, "Easing of an action: `linear`, `in`, `out` or `in_out` (default)."),
     ("from", Kind::Property, "Start point of an arrow or line."),
@@ -76,9 +89,95 @@ pub const DOCS: &[(&str, Kind, &str)] = &[
     ("in", Kind::Value, "Easing: starts slow."),
     ("out", Kind::Value, "Easing: ends slow."),
     ("in_out", Kind::Value, "Easing: starts and ends slow (the default)."),
+    ("left", Kind::Value, "`align left`: `at` is the left edge."),
+    ("center", Kind::Value, "`align center`: `at` is the center (the default)."),
+    ("right", Kind::Value, "`align right`: `at` is the right edge."),
+    // Functions
+    ("len", Kind::Function, "`len(xs)`: number of items in a list, or characters in a string."),
+    ("floor", Kind::Function, "`floor(x)`: round down."),
+    ("ceil", Kind::Function, "`ceil(x)`: round up. `ceil(len(data) / 16)` rows of 16."),
+    ("round", Kind::Function, "`round(x)`: round to the nearest whole number."),
+    ("abs", Kind::Function, "`abs(x)`: absolute value."),
+    ("min", Kind::Function, "`min(a, b)`: the smaller value (same units)."),
+    ("max", Kind::Function, "`max(a, b)`: the larger value (same units)."),
+    ("mod", Kind::Function, "`mod(i, 8)`: remainder, for wrapping into columns."),
+    ("str", Kind::Function, "`str(42)`: a number as text, to join with `+`."),
+    ("hex", Kind::Function, "`hex(255)` is `\"ff\"`, `hex(16, 8)` is `\"00000010\"`."),
+    ("join", Kind::Function, "`join(xs, \" \")`: list items as one string with a separator."),
+    ("slice", Kind::Function, "`slice(xs, start, count)`: part of a list (count may be left out)."),
+    ("ascii", Kind::Function, "`ascii(bytes)`: bytes like `\"41\"` as printable text, `.` for the rest, like a hex dump's right column."),
+    ("bytes", Kind::Function, "`bytes(\"payload.bin\", offset, count)`: a file's bytes as a list of hex strings like `\"41\"`. Up to 1 MiB, from the scene's folder."),
+    ("file", Kind::Function, "`file(\"exploit.c\")`: a text file's contents, for `code` or `text`. From the scene's folder."),
+    ("table", Kind::Function, "`table(\"packets.csv\")`: rows of a .csv or .tsv file as lists of strings: `rows[1][2]`."),
 ];
 
 /// Documentation for a word, if the language knows it.
 pub fn lookup(word: &str) -> Option<(Kind, &'static str)> {
     DOCS.iter().find(|d| d.0 == word).map(|d| (d.1, d.2))
+}
+
+/// The language reference (docs/reference.md), generated from the tables the
+/// compiler uses, so it cannot drift from what the compiler accepts.
+pub fn reference() -> String {
+    use crowmation_core::{MAX_DURATION, MAX_FPS, MAX_SIZE};
+    let mut s = String::from(
+        "# Language reference\n\n\
+         Generated from the compiler (`lang/src/docs.rs`); do not edit by hand.\n\
+         Regenerate with `UPDATE_DOCS=1 cargo test -p crowmation-lang reference`.\n\n\
+         For an introduction, see the [guide](guide.md).\n",
+    );
+    let section = |s: &mut String, title: &str, kind: Kind, with_props: bool| {
+        *s += &format!("\n## {title}\n\n");
+        for (word, k, doc) in DOCS {
+            if *k != kind {
+                continue;
+            }
+            *s += &format!("### `{word}`\n\n{doc}\n");
+            let props = crate::compile::props_of(word);
+            if with_props && !props.is_empty() {
+                *s += &format!("\nProperties: {}\n", props.iter().map(|p| format!("`{p}`")).collect::<Vec<_>>().join(", "));
+            }
+            *s += "\n";
+        }
+    };
+    section(&mut s, "Structure and timing", Kind::Keyword, false);
+    section(&mut s, "Scene settings", Kind::Setting, false);
+    s += &format!(
+        "Limits: `size` up to {MAX_SIZE}×{MAX_SIZE}, `fps` up to {MAX_FPS}, scenes up to {}s long. \
+         Text `size` is 1 to {}, `repeat` counts are at most {}.\n",
+        MAX_DURATION,
+        crate::compile::MAX_TEXT_SIZE,
+        crate::compile::MAX_REPEAT
+    );
+    section(&mut s, "Objects", Kind::Object, true);
+    section(&mut s, "Actions", Kind::Action, true);
+    section(&mut s, "Properties", Kind::Property, false);
+    section(&mut s, "Values", Kind::Value, false);
+    section(&mut s, "Functions", Kind::Function, false);
+    s += "Data files (`bytes`, `file`, `table`) must be inside the scene's folder and at most 1 MiB; \
+          the preview reloads when they change.\n";
+    s += "\n## Values and units\n\n\
+          | Write | Meaning |\n|---|---|\n\
+          | `12`, `0.5` | number |\n\
+          | `2s`, `500ms` | time |\n\
+          | `45deg`, `1.2rad` | angle (deg are converted to rad) |\n\
+          | `(x, y)`, `(x, y, z)` | point; pixels from the top left, `z` toward the viewer |\n\
+          | `#ff8800`, `#ff880080` | color, optionally with alpha |\n\
+          | `\"text\"` | string; `\\\"`, `\\\\` and `\\n` are escapes, may span lines |\n\
+          | `[a, b, c]`, `xs[i]` | list and indexing |\n\n\
+          Math with units is checked: `1s + 500ms` is fine, `1s + 2deg` is an error. \
+          Strings join with `+`. `//` starts a comment.\n";
+
+    s += "\n## Built-in library: `std:cybersec`\n\nImport with `import \"std:cybersec\"`. Every component is centered on its `at`.\n\n";
+    for (_, text) in crate::STD {
+        let mut diags = Vec::new();
+        for item in crate::parse_source(text, 0, &mut diags) {
+            if let crate::parse::Item::Component { name: n, params, .. } = item {
+                let params: Vec<&str> = params.iter().map(|p| p.name.as_str()).collect();
+                let doc = crate::analyze::doc_comment(text, n.span.start);
+                s += &format!("### `{}({})`\n\n{doc}\n\n", n.name, params.join(", "));
+            }
+        }
+    }
+    s
 }

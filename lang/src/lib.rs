@@ -1,6 +1,7 @@
 //! The `.cwm` scene language: source text in, compiled timeline out.
 
 mod compile;
+pub mod analyze;
 pub mod docs;
 mod lex;
 mod parse;
@@ -63,15 +64,16 @@ pub fn compile(src: &str) -> Result<Timeline, Vec<Diag>> {
         }
     }
     let paths = vec![None; files.len()];
-    finish(&files, &paths, diags)
+    finish(&files, &paths, diags, &mut Vec::new())
 }
 
-fn finish(files: &[Vec<Item>], paths: &[Option<PathBuf>], mut diags: Vec<Diag>) -> Result<Timeline, Vec<Diag>> {
+/// Compile parsed files; data files the scene reads are added to `deps`.
+pub(crate) fn finish(files: &[Vec<Item>], paths: &[Option<PathBuf>], mut diags: Vec<Diag>, deps: &mut Vec<PathBuf>) -> Result<Timeline, Vec<Diag>> {
     // Type errors in a file that failed to parse are mostly noise, so stop here.
     if !diags.is_empty() {
         return Err(diags);
     }
-    compile::compile(files, paths, &mut diags).ok_or(diags)
+    compile::compile(files, paths, &mut diags, deps).ok_or(diags)
 }
 
 /// Render diagnostics as annotated source, colored if `color`.
@@ -168,16 +170,6 @@ pub fn load_sources(path: &Path, text: Option<&str>) -> Result<(Vec<Source>, Vec
     Ok((sources, files, diags))
 }
 
-/// Check a scene for errors without rendering, for editors. `text` is the
-/// scene's current (possibly unsaved) contents. Returns the sources so spans
-/// can be mapped back to lines.
-pub fn check(path: &Path, text: &str) -> Result<(Vec<Source>, Vec<Diag>), String> {
-    let (sources, files, diags) = load_sources(path, Some(text))?;
-    let paths: Vec<Option<PathBuf>> = sources.iter().map(|s| s.path.clone()).collect();
-    let diags = finish(&files, &paths, diags).err().unwrap_or_default();
-    Ok((sources, diags))
-}
-
 /// Load and compile a `.cwm` scene.
 /// Also returns every file read, so callers can watch them for changes.
 pub fn load(path: &Path, color: bool) -> (Result<Timeline, String>, Vec<PathBuf>) {
@@ -189,8 +181,9 @@ pub fn load(path: &Path, color: bool) -> (Result<Timeline, String>, Vec<PathBuf>
         Err(e) => return (Err(e), vec![path.to_path_buf()]),
     };
     let paths: Vec<Option<PathBuf>> = sources.iter().map(|s| s.path.clone()).collect();
-    let watched = paths.iter().flatten().cloned().collect();
-    (finish(&files, &paths, diags).map_err(|d| report(&sources, &d, color)), watched)
+    let mut watched: Vec<PathBuf> = paths.iter().flatten().cloned().collect();
+    let res = finish(&files, &paths, diags, &mut watched).map_err(|d| report(&sources, &d, color));
+    (res, watched)
 }
 
 #[cfg(test)]
@@ -304,9 +297,12 @@ mod tests {
             "#,
         )
         .unwrap();
-        assert_eq!(tl.objects.len(), 4);
-        assert_eq!(tl.objects[3].state.pos, Vec2::new(100.0 + 3.0 * 42.0, 50.0));
-        assert_eq!(tl.tracks[1].object, 2, "row.c[2]");
+        // The instance is a group at (100, 50); its parts are placed relative to it.
+        assert_eq!(tl.objects.len(), 5);
+        assert_eq!(tl.objects[0].shape, crowmation_core::Shape::Group);
+        assert_eq!(tl.objects[0].state.pos, Vec2::new(100.0, 50.0));
+        assert_eq!((tl.objects[4].state.pos, tl.objects[4].parent), (Vec2::new(3.0 * 42.0, 0.0), Some(0)));
+        assert_eq!(tl.tracks[1].object, 3, "row.c[2]");
         assert_eq!(tl.tracks[1].start, 1.0);
     }
 
@@ -319,8 +315,7 @@ mod tests {
         assert!(has("is a built in name"), "{e:#?}");
         assert!(has("`a` needs `x`"), "{e:#?}");
         assert!(has("uses itself"), "{e:#?}");
-        assert!(has("actions are not allowed inside a component"), "{e:#?}");
-        assert!(has("groups support fades"), "{e:#?}");
+        assert!(has("no object named `q`"), "{e:#?}");
         assert!(has("repeat count must be"), "{e:#?}");
     }
 
@@ -344,7 +339,7 @@ mod tests {
 
         std::fs::write(dir.join("lib/more.cwm"), "component pair() {\n dot a r 1\n dot b r 2 at (10, 0)\n}\n").unwrap();
         let tl = load(&dir.join("main.cwm"), false).0.unwrap();
-        assert_eq!(tl.objects.len(), 2);
+        assert_eq!(tl.objects.len(), 5, "groups p, p.a, p.b and two circles");
 
         std::fs::write(dir.join("main.cwm"), "import \"../outside.cwm\"\nscene {\n}\n").unwrap();
         std::fs::write(dir.join("../outside.cwm"), "").ok();
@@ -360,7 +355,7 @@ mod tests {
         )
         .unwrap();
         let src = |i: usize| match &tl.objects[i].shape {
-            crowmation_core::Shape::Typst { source } => source.clone(),
+            crowmation_core::Shape::Typst { source, .. } => source.clone(),
             _ => panic!(),
         };
         assert!(src(0).contains("Hello *bold* \\#1"), "{}", src(0));
@@ -385,10 +380,11 @@ mod tests {
             "component card() {\n rect bg size (100, 50) corner 8 outline #ffffff\n text t \"hi\"\n}\nscene {\n card c at (10, 10)\n fade_in c\n move c by (5, 0)\n arrow a from (0, 0) to (30, 40)\n line l from (1, 1) to (2, 2) width 2\n}",
         )
         .unwrap();
-        assert_eq!(tl.tracks.len(), 4, "fade and move for both parts");
-        assert!(tl.objects[..2].iter().all(|o| o.state.opacity == 0.0));
-        assert_eq!(tl.objects[0].outline.as_ref().unwrap().width, 2.0);
-        match &tl.objects[2].shape {
+        assert_eq!(tl.tracks.len(), 2, "fade and move on the group");
+        assert!(tl.tracks.iter().all(|t| t.object == 0));
+        assert_eq!(tl.objects[0].state.opacity, 0.0, "the group starts hidden");
+        assert_eq!(tl.objects[1].outline.as_ref().unwrap().width, 2.0);
+        match &tl.objects[3].shape {
             crowmation_core::Shape::Arrow { to, head, .. } => assert_eq!((*to, *head), (Vec2::new(30.0, 40.0), 16.0)),
             s => panic!("{s:?}"),
         }
@@ -401,7 +397,7 @@ mod tests {
             "import \"std:cybersec\"\nscene {\n byte b label \"41\" fill #333333\n memory_row r n 4 fill #333333\n memory_grid g rows 2 cols 3 fill #333333\n panel p title \"GET /\" body \"Host: a\" width 400 height 200 accent #58a6ff\n browser w url \"https://x\" width 800 height 500\n fade_in w\n}",
         )
         .unwrap();
-        assert_eq!(tl.objects.len(), 2 + 4 + 6 + 4 + 7);
+        assert_eq!(tl.objects.len(), 5 + 2 + 4 + 6 + 4 + 7, "a group per instance plus its parts");
         assert!(errs("import \"std:nope\"\nscene {\n}")[0].contains("file imports"));
     }
 
@@ -442,8 +438,8 @@ mod tests {
 
     #[test]
     fn docs_cover_the_language() {
-        use compile::{ACTIONS, KEYWORDS, SHAPES};
-        for w in SHAPES.iter().chain(ACTIONS).chain(KEYWORDS).chain(parse::SETTINGS) {
+        use compile::{ACTIONS, FUNCTIONS, KEYWORDS, SHAPES};
+        for w in SHAPES.iter().chain(ACTIONS).chain(KEYWORDS).chain(parse::SETTINGS).chain(FUNCTIONS) {
             assert!(docs::lookup(w).is_some(), "`{w}` has no docs");
         }
     }
@@ -451,5 +447,87 @@ mod tests {
     #[test]
     fn suggests_close_commands() {
         assert_eq!(errs("scene {\n circle c radius 1\n at 1s fade_inn c\n}"), ["unknown command `fade_inn`, did you mean `fade_in`?"]);
+    }
+
+    #[test]
+    fn reference_is_up_to_date() {
+        let path = Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../docs/reference.md"));
+        let fresh = docs::reference();
+        if std::env::var_os("UPDATE_DOCS").is_some() {
+            std::fs::write(path, &fresh).unwrap();
+        }
+        let current = std::fs::read_to_string(path).unwrap_or_default();
+        assert!(current == fresh, "docs/reference.md is out of date: run `UPDATE_DOCS=1 cargo test -p crowmation-lang reference`");
+    }
+
+    #[test]
+    fn guide_examples_compile() {
+        let guide = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../docs/guide.md")).unwrap();
+        let blocks: Vec<&str> = guide.split("```cwm\n").skip(1).map(|b| b.split("```").next().unwrap()).collect();
+        assert!(blocks.len() >= 6);
+        for b in blocks {
+            if let Err(d) = compile(b) {
+                panic!("guide example does not compile: {:?}\n{b}", d.iter().map(|d| &d.msg).collect::<Vec<_>>());
+            }
+        }
+    }
+
+    #[test]
+    fn stagger_highlight_shake_layout() {
+        let tl = compile(
+            "component pop() {\n circle c radius 5\n fade_in c duration 200ms\n}\nscene {\n repeat 3 as i {\n  rect c[i] size (10, 10) at (i * 20, 0)\n }\n rect a size (100, 50) at (500, 300)\n rect b size (20, 20) below a gap 10\n text t \"hi\" right_of a gap 0 align left\n fade_in c stagger 100ms duration 200ms\n after highlight a\n after shake b times 2\n after pop p at (0, 0)\n rotate p by 90deg\n}",
+        )
+        .unwrap();
+        let starts: Vec<f64> = tl.tracks.iter().filter(|t| t.object < 3).map(|t| t.start).collect();
+        assert_eq!(starts, [0.0, 0.1, 0.2], "staggered");
+        assert!(tl.objects[..3].iter().all(|o| o.state.opacity == 0.0), "fade_in first: hidden");
+        assert_eq!(tl.objects[4].state.pos, Vec2::new(500.0, 345.0), "below a, 10px gap");
+        let t = &tl.objects[5];
+        assert_eq!(t.state.pos.y, 300.0, "right_of centers vertically");
+        assert!((t.state.pos.x - 550.0).abs() < 0.01, "left aligned text starts at a's right edge: {}", t.state.pos.x);
+        let pulse: Vec<_> = tl.tracks.iter().filter(|t| t.object == 3).collect();
+        assert_eq!(pulse.len(), 2, "highlight scales up and back");
+        let shake: Vec<_> = tl.tracks.iter().filter(|t| t.object == 4).collect();
+        assert_eq!(shake.len(), 5);
+        assert_eq!(shake.last().unwrap().anim, crowmation_core::Anim::Move { from: Vec2::new(488.0, 345.0), to: Vec2::new(500.0, 345.0) }, "ends where it started (default 12px)");
+        // The component's own fade starts where the instance is declared; the group then rotates.
+        let fade = tl.tracks.iter().find(|t| t.object == 7).unwrap();
+        assert_eq!(fade.start, shake.last().unwrap().end);
+        assert!(tl.tracks.iter().any(|t| t.object == 6 && matches!(t.anim, crowmation_core::Anim::Rotate { .. })));
+        assert!(errs("scene {\n rect r size (1, 1)\n section r to 0.5\n}")[0].contains("is not a model"));
+        assert!(errs("scene {\n rect a size (1, 1)\n rect b size (1, 1) at (0, 0) below a\n}")[0].contains("both place"));
+    }
+
+    #[test]
+    fn functions_and_data_files() {
+        let tl = compile(
+            "scene {\n let xs = [\"41\", \"42\", \"0a\"]\n text a content join(xs, \" \") + \" \" + ascii(xs) + \" \" + hex(255, 4) + str(len(xs))\n circle c radius max(mod(7, 4), floor(2.7))\n}",
+        )
+        .unwrap();
+        match &tl.objects[0].shape {
+            crowmation_core::Shape::Typst { source, .. } => assert!(source.ends_with("41 42 0a AB. 00ff3"), "{source}"),
+            s => panic!("{s:?}"),
+        }
+        assert_eq!(tl.objects[1].shape, crowmation_core::Shape::Circle { radius: 3.0 });
+        assert!(errs("scene {\n circle c radius lenn([1])\n}")[0].contains("did you mean `len`"));
+
+        let dir = std::env::temp_dir().join(format!("cwm-data-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("p.bin"), b"AB\x00\xff").unwrap();
+        std::fs::write(dir.join("t.csv"), "name,port\n\"web, main\",443\n").unwrap();
+        std::fs::write(
+            dir.join("s.cwm"),
+            "scene {\n let b = bytes(\"p.bin\", 1, 2)\n let t = table(\"t.csv\")\n text x content join(b, \"-\") + \"/\" + t[1][0] + \"/\" + t[1][1]\n}",
+        )
+        .unwrap();
+        let (tl, watched) = load(&dir.join("s.cwm"), false);
+        match &tl.unwrap().objects[0].shape {
+            crowmation_core::Shape::Typst { source, .. } => assert!(source.ends_with("42-00/web, main/443"), "{source}"),
+            s => panic!("{s:?}"),
+        }
+        assert!(watched.iter().any(|p| p.ends_with("p.bin")) && watched.iter().any(|p| p.ends_with("t.csv")), "data files are watched");
+        std::fs::write(dir.join("s.cwm"), "scene {\n let b = bytes(\"../../etc/passwd\")\n}").unwrap();
+        assert!(load(&dir.join("s.cwm"), false).0.unwrap_err().contains("must be inside"));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -4,6 +4,9 @@ members = ["core", "lang", "text", "render", "encode", "preview", "cli", "mesh"]
 
 [workspace.package]
 edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/InfinitiWarrior/Crowmation"
+homepage = "https://crowmation.com"
 
 [workspace.dependencies]
 crowmation-core = { path = "core" }
@@ -18,3 +21,11 @@ ron = "0.12"
 
 [profile.release]
 lto = "thin"
+
+# Release downloads: smaller and a bit faster, slower to build.
+# cargo build --profile dist -p crowmation
+[profile.dist]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+strip = true

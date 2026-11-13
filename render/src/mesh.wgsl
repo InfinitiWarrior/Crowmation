@@ -12,6 +12,8 @@ struct Obj {
     // sRGB, straight alpha (opacity applied).
     color: vec4<f32>,
     outline: vec4<f32>,
+    // Section cut: discard where dot(xyz, world) > w.
+    clip: vec4<f32>,
     id: u32,
     _p0: u32,
     _p1: u32,
@@ -41,6 +43,9 @@ fn vs(@location(0) p: vec3<f32>, @builtin(instance_index) i: u32) -> V {
 @fragment
 fn fs(v: V) -> Out {
     let o = objs[v.inst];
+    if (dot(o.clip.xyz, v.world) > o.clip.w) {
+        discard;
+    }
     // Face normal from screen space derivatives, turned toward the camera.
     var n = normalize(cross(dpdx(v.world), dpdy(v.world)));
     if (dot(n, g.eye.xyz - v.world) < 0.0) {

@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Crowmation</title>
+<meta name="description" content="A GPU accelerated animation engine for explainer videos, driven by a small, safe scene language.">
+<meta property="og:title" content="Crowmation">
+<meta property="og:description" content="Explainer videos written as code, rendered on the GPU.">
+<meta property="og:image" content="media/poster.png">
+<style>
+  :root {
+    --bg: #0d1117;
+    --panel: #161b22;
+    --line: #30363d;
+    --text: #e6edf3;
+    --dim: #8b949e;
+    --accent: #388bfd;
+    --amber: #ffb347;
+    --red: #e5484d;
+    --mono: ui-monospace, "JetBrains Mono", "DejaVu Sans Mono", monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 17px/1.6 Inter, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main { max-width: 1040px; margin: 0 auto; padding: 0 16px 80px; }
+  a { color: var(--accent); }
+  header { padding: 72px 0 32px; text-align: center; }
+  h1 { font-size: clamp(44px, 8vw, 76px); line-height: 1; margin: 0 0 16px; letter-spacing: -0.02em; }
+  .tagline { color: var(--dim); font-size: clamp(18px, 2.4vw, 22px); margin: 0 auto; max-width: 640px; }
+  video {
+    display: block; width: 100%; border-radius: 12px; border: 1px solid var(--line);
+    background: #000; margin: 32px 0 40px; aspect-ratio: 16 / 9;
+  }
+  h2 { font-size: 26px; margin: 56px 0 16px; }
+  .install {
+    display: flex; align-items: center; gap: 12px; background: var(--panel);
+    border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px;
+    font-family: var(--mono); font-size: 15px; overflow-x: auto;
+  }
+  .install code { flex: 1; white-space: nowrap; }
+  .install button {
+    flex: none; background: var(--accent); color: #fff; border: 0; border-radius: 6px;
+    padding: 6px 12px; font: inherit; font-family: Inter, system-ui, sans-serif; cursor: pointer;
+  }
+  .note { color: var(--dim); font-size: 15px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 18px 20px; }
+  .card h3 { margin: 0 0 6px; font-size: 18px; }
+  .card p { margin: 0; color: var(--dim); font-size: 15px; }
+  pre {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    padding: 18px 20px; overflow-x: auto; font: 14px/1.55 var(--mono); margin: 0;
+  }
+  .k { color: #ff7b72; } .o { color: #d2a8ff; } .a { color: #79c0ff; }
+  .s { color: #a5d6ff; } .n { color: var(--amber); } .c { color: #6e7681; }
+  .links { display: flex; flex-wrap: wrap; gap: 12px 24px; }
+  footer { color: var(--dim); font-size: 14px; text-align: center; padding: 40px 16px; border-top: 1px solid var(--line); }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Crowmation</h1>
+    <p class="tagline">Explainer videos written as code, rendered on the GPU.
+      Built for showing how vulnerabilities work, and anything else.</p>
+  </header>
+
+  <video src="media/showcase.mp4" poster="media/poster.png" controls muted playsinline preload="metadata"></video>
+
+  <h2>Install</h2>
+  <div class="install">
+    <code id="cmd">curl -fsSL https://crowmation.com/install.sh | sh</code>
+    <button type="button" id="copy">Copy</button>
+  </div>
+  <p class="note">Linux x86_64 with a Vulkan driver. Uses NVENC on NVIDIA GPUs and a fast
+    software encoder everywhere else. Or build from source:
+    <code>cargo install --git https://github.com/InfinitiWarrior/Crowmation crowmation</code></p>
+
+  <h2>A scene is a short script</h2>
+<pre><span class="k">import</span> <span class="s">"std:cybersec"</span>
+
+<span class="k">scene</span> <span class="s">"overflow"</span> {
+  <span class="k">let</span> payload = bytes(<span class="s">"payload.bin"</span>)
+  <span class="o">text</span> title <span class="s">"Stack buffer overflow"</span> <span class="a">size</span> <span class="n">56</span> <span class="a">at</span> (<span class="n">960</span>, <span class="n">90</span>)
+  hexdump dump <span class="a">data</span> payload <span class="a">cols</span> <span class="n">16</span> <span class="a">size</span> <span class="n">22</span> <span class="a">below</span> title
+
+  <span class="k">at</span> <span class="n">0.3s</span> <span class="o">fade_in</span> title
+  <span class="k">after</span> <span class="o">fade_in</span> dump <span class="a">stagger</span> <span class="n">80ms</span>
+  <span class="k">after</span> <span class="o">highlight</span> dump.hex[<span class="n">1</span>] <span class="a">color</span> <span class="n">#e5484d</span>  <span class="c">// the return address</span>
+}</pre>
+  <p class="note"><code>crowmation preview scene.cwm</code> opens a window that reloads on every save;
+    <code>crowmation render scene.cwm out.mp4</code> exports. The 36 second video above
+    renders in about 2.5 seconds.</p>
+
+  <h2>What it does</h2>
+  <div class="grid">
+    <div class="card"><h3>Text, code and math</h3><p>Laid out by Typst and drawn as vectors: sharp at any size, with syntax highlighting.</p></div>
+    <div class="card"><h3>Real data</h3><p>Load bytes, source files and CSV tables; show them with hex dumps, memory rows and request panels.</p></div>
+    <div class="card"><h3>2D and 3D together</h3><p>Load .glb models, orbit the camera, explode and cut them open. 2D and 3D share one space.</p></div>
+    <div class="card"><h3>Layout and effects</h3><p>below, right_of, stagger, highlight, shake, groups that move and rotate as one.</p></div>
+    <div class="card"><h3>Fast export</h3><p>Hardware encoding on NVIDIA, parallel software encoding elsewhere. Unchanged frames are not redrawn.</p></div>
+    <div class="card"><h3>Safe to share</h3><p>Scenes cannot loop forever or read files outside their folder, so opening someone else's is safe.</p></div>
+    <div class="card"><h3>Editor support</h3><p>Errors as you type, completion, hover docs and go to definition in Neovim and VS Code.</p></div>
+    <div class="card"><h3>Helpful errors</h3><p>Every problem at once, pointing at the line, with "did you mean" suggestions.</p></div>
+  </div>
+
+  <h2>Learn more</h2>
+  <div class="links">
+    <a href="https://github.com/InfinitiWarrior/Crowmation/blob/main/docs/guide.md">Guide</a>
+    <a href="https://github.com/InfinitiWarrior/Crowmation/blob/main/docs/reference.md">Language reference</a>
+    <a href="https://github.com/InfinitiWarrior/Crowmation/tree/main/examples">Examples</a>
+    <a href="https://github.com/InfinitiWarrior/Crowmation/releases">Releases</a>
+    <a href="https://github.com/InfinitiWarrior/Crowmation">Source</a>
+  </div>
+</main>
+<footer>Crowmation · Rust, wgpu, vello and Typst</footer>
+<script>
+  // The install command uses whatever domain the site is served from.
+  const cmd = document.getElementById("cmd");
+  if (location.protocol.startsWith("http")) cmd.textContent = `curl -fsSL ${location.origin}/install.sh | sh`;
+  document.getElementById("copy").addEventListener("click", async (e) => {
+    try {
+      await navigator.clipboard.writeText(cmd.textContent);
+      e.target.textContent = "Copied";
+    } catch {
+      e.target.textContent = "Select and copy";
+    }
+    setTimeout(() => (e.target.textContent = "Copy"), 1500);
+  });
+</script>
+</body>
+</html>

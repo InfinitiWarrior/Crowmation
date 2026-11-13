@@ -65,13 +65,14 @@ fn render(path: &str, out: &str, flags: &[&str]) -> Result<(), String> {
     let tl = load(path)?;
     let start = std::time::Instant::now();
     let mut r = crowmation_render::Headless::new(tl.width, tl.height)?;
-    let s = Settings { width: tl.width, height: tl.height, fps: tl.fps, high_quality };
     let frames = tl.frame_count();
+    let s = Settings { width: tl.width, height: tl.height, fps: tl.fps, high_quality, frames };
+    let (order, lanes) = crowmation_encode::frame_order(&s, backend);
     // A few frames of slack lets rendering run ahead of encoding.
-    let (tx, rx) = std::sync::mpsc::sync_channel::<Vec<u8>>(4);
+    let (tx, rx) = std::sync::mpsc::sync_channel::<(u64, Vec<u8>)>(4);
     let out_path = std::path::PathBuf::from(out);
     let writer = std::thread::spawn(move || encode_mp4(&out_path, &s, backend, rx));
-    let rendered = r.render_i420(&tl, frames, |_, f| tx.send(f.to_vec()).map_err(|_| "encoder stopped".to_string()));
+    let rendered = r.render_i420(&tl, &order, lanes, |i, f| tx.send((i, f.to_vec())).map_err(|_| "encoder stopped".to_string()));
     drop(tx);
     let used = writer.join().map_err(|_| "encoder thread panicked")??;
     rendered?;

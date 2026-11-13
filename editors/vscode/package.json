@@ -4,23 +4,39 @@
   "description": "Crowmation scene files (.cwm): highlighting, errors as you type, completion and hover docs",
   "version": "0.1.0",
   "publisher": "crowmation",
-  "license": "UNLICENSED",
-  "repository": { "type": "git", "url": "https://github.com/" },
-  "engines": { "vscode": "^1.90.0" },
-  "categories": ["Programming Languages"],
+  "license": "MIT OR Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/InfinitiWarrior/Crowmation"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
   "main": "./extension.js",
   "activationEvents": [],
   "contributes": {
     "languages": [
       {
         "id": "cwm",
-        "aliases": ["Crowmation", "cwm"],
-        "extensions": [".cwm"],
+        "aliases": [
+          "Crowmation",
+          "cwm"
+        ],
+        "extensions": [
+          ".cwm"
+        ],
         "configuration": "./language-configuration.json"
       }
     ],
     "grammars": [
-      { "language": "cwm", "scopeName": "source.cwm", "path": "./syntaxes/cwm.tmLanguage.json" }
+      {
+        "language": "cwm",
+        "scopeName": "source.cwm",
+        "path": "./syntaxes/cwm.tmLanguage.json"
+      }
     ],
     "configuration": {
       "title": "Crowmation",
@@ -35,5 +51,6 @@
   },
   "dependencies": {
     "vscode-languageclient": "^9.0.1"
-  }
+  },
+  "homepage": "https://crowmation.com"
 }

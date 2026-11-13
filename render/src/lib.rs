@@ -76,19 +76,24 @@ pub fn build_scene(tl: &Timeline, t: f64, root: Affine, scene: &mut Scene) {
 
 /// Draw the 2D objects for which `keep(index)` holds. 3D objects are skipped.
 pub(crate) fn draw_2d(tl: &Timeline, states: &[State], keep: impl Fn(usize) -> bool, root: Affine, scene: &mut Scene) {
+    // Each object's transform and opacity with its groups applied (parents come first).
+    let mut world: Vec<(Affine, f32)> = Vec::with_capacity(states.len());
     for (i, (obj, s)) in tl.objects.iter().zip(states).enumerate() {
-        if s.opacity <= 0.0 || !keep(i) {
+        let local = Affine::translate((s.pos.x as f64, s.pos.y as f64)) * Affine::rotate(s.rotation as f64) * Affine::scale(s.scale as f64);
+        let (xf, opacity) = match obj.parent {
+            Some(p) => (world[p].0 * local, world[p].1 * s.opacity),
+            None => (local, s.opacity),
+        };
+        world.push((xf, opacity));
+        if opacity <= 0.0 || !keep(i) {
             continue;
         }
-        let xf = root
-            * Affine::translate((s.pos.x as f64, s.pos.y as f64))
-            * Affine::rotate(s.rotation as f64)
-            * Affine::scale(s.scale as f64);
+        let xf = root * xf;
         let [r, g, b, a] = s.color;
-        let color = Color::new([r, g, b, a * s.opacity]);
+        let color = Color::new([r, g, b, a * opacity]);
         let outline = obj.outline.as_ref().map(|o| {
             let [r, g, b, a] = o.color;
-            (Stroke::new(o.width as f64), Color::new([r, g, b, a * s.opacity]))
+            (Stroke::new(o.width as f64), Color::new([r, g, b, a * opacity]))
         });
         match &obj.shape {
             Shape::Rect { size, radius } => {
@@ -114,14 +119,14 @@ pub(crate) fn draw_2d(tl: &Timeline, states: &[State], keep: impl Fn(usize) -> b
                     let (iw, ih) = (img.width as f64, img.height as f64);
                     let (w, h) = (size.x as f64, size.y as f64);
                     let ixf = xf * Affine::translate((-w / 2.0, -h / 2.0)) * Affine::scale_non_uniform(w / iw, h / ih);
-                    scene.draw_image(&ImageBrush::new(img).multiply_alpha(s.opacity), ixf);
+                    scene.draw_image(&ImageBrush::new(img).multiply_alpha(opacity), ixf);
                     if let Some((st, c)) = &outline {
                         scene.stroke(st, xf, *c, None, &Rect::new(-w / 2.0, -h / 2.0, w / 2.0, h / 2.0));
                     }
                 }
                 Err(e) => eprintln!("image: {e}"),
             },
-            Shape::Typst { source } => {
+            Shape::Typst { source, align } => {
                 // The compiler already checked the source, so errors here mean a hand written timeline.
                 let layout = match crowmation_text::layout(source) {
                     Ok(l) => l,
@@ -130,8 +135,8 @@ pub(crate) fn draw_2d(tl: &Timeline, states: &[State], keep: impl Fn(usize) -> b
                         continue;
                     }
                 };
-                let xf = xf * Affine::translate((-layout.width / 2.0, -layout.height / 2.0));
-                let pick = |c: &Option<Color>| c.map_or(color, |c| c.multiply_alpha(a * s.opacity));
+                let xf = xf * Affine::translate((-layout.width * *align as f64, -layout.height / 2.0));
+                let pick = |c: &Option<Color>| c.map_or(color, |c| c.multiply_alpha(a * opacity));
                 for item in &layout.items {
                     match item {
                         text::Item::Glyphs { font, size, color: c, xf: ixf, glyphs } => scene
@@ -149,7 +154,7 @@ pub(crate) fn draw_2d(tl: &Timeline, states: &[State], keep: impl Fn(usize) -> b
                     }
                 }
             }
-            Shape::Model { .. } | Shape::Mesh { .. } | Shape::Camera { .. } => {}
+            Shape::Group | Shape::Model { .. } | Shape::Mesh { .. } | Shape::Camera { .. } => {}
         }
     }
 }
@@ -203,6 +208,7 @@ impl Headless {
         let mut ctx = RenderContext::new();
         let id = pollster::block_on(ctx.device(None)).ok_or("no compatible GPU found")?;
         let handle = ctx.devices.swap_remove(id);
+        let renderer = renderer(&handle.device);
         let (device, queue) = (handle.device, handle.queue);
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("frame"),
@@ -218,7 +224,6 @@ impl Headless {
             view_formats: &[],
         });
         let view = texture.create_view(&Default::default());
-        let renderer = renderer(&device);
         Ok(Self { device, queue, renderer, scene: Scene::new(), texture, view, width, height, i420: None, three: None })
     }
 
@@ -311,32 +316,41 @@ impl Headless {
         Ok(())
     }
 
-    /// Render frames `0..count` (frame i at time i/fps) as I420 (BT.709, limited
-    /// range), calling `sink(i, bytes)` in order. GPU work for later frames
-    /// overlaps with `sink` for earlier ones.
+    /// Render the frames in `order` (frame i at time i/fps) as I420 (BT.709,
+    /// limited range), calling `sink(i, bytes)` in that order. GPU work for
+    /// later frames overlaps with `sink` for earlier ones.
+    ///
+    /// `order` may interleave `lanes` independent runs of frames (lane =
+    /// position % lanes, see crowmation_encode::frame_order). A frame whose
+    /// state equals the previous frame of its lane is not rendered again.
     pub fn render_i420(
         &mut self,
         tl: &Timeline,
-        count: u64,
+        order: &[u64],
+        lanes: usize,
         mut sink: impl FnMut(u64, &[u8]) -> Result<(), String>,
     ) -> Result<(), String> {
         if self.i420.is_none() {
             self.i420_setup()?;
         }
-        // None marks a hold: nothing changed since the previous frame, so it is reused.
-        let mut pending: std::collections::VecDeque<(u64, Option<wgpu::SubmissionIndex>)> = Default::default();
-        let mut prev_states = None;
-        let mut last = Vec::new();
-        for i in 0..count + RING as u64 - 1 {
-            if i < count {
+        let lanes = lanes.max(1);
+        // (frame, lane, submission); no submission marks a hold that reuses the lane's last frame.
+        let mut pending: std::collections::VecDeque<(u64, usize, Option<(usize, wgpu::SubmissionIndex)>)> = Default::default();
+        let mut prev_states: Vec<Option<Vec<crowmation_core::State>>> = vec![None; lanes];
+        let mut last: Vec<Vec<u8>> = vec![Vec::new(); lanes];
+        let mut slot_next = 0;
+        for pos in 0..=order.len() {
+            if let Some(&i) = order.get(pos) {
+                let lane = pos % lanes;
                 let t = i as f64 / tl.fps as f64;
                 let states = tl.eval(t);
-                if prev_states.as_ref() == Some(&states) {
-                    pending.push_back((i, None));
+                if prev_states[lane].as_ref() == Some(&states) {
+                    pending.push_back((i, lane, None));
                 } else {
                     self.draw(tl, t)?;
                     let c = self.i420.as_ref().unwrap();
-                    let slot = &c.ring[i as usize % RING];
+                    let slot = slot_next % RING;
+                    slot_next += 1;
                     let mut enc = self.device.create_command_encoder(&Default::default());
                     {
                         let mut pass = enc.begin_compute_pass(&Default::default());
@@ -344,23 +358,28 @@ impl Headless {
                         pass.set_bind_group(0, &c.bind, &[]);
                         pass.dispatch_workgroups((self.width / 8).div_ceil(8), (self.height / 2).div_ceil(8), 1);
                     }
-                    enc.copy_buffer_to_buffer(&c.out, 0, slot, 0, c.out.size());
-                    pending.push_back((i, Some(self.queue.submit([enc.finish()]))));
-                    prev_states = Some(states);
+                    enc.copy_buffer_to_buffer(&c.out, 0, &c.ring[slot], 0, c.out.size());
+                    pending.push_back((i, lane, Some((slot, self.queue.submit([enc.finish()])))));
+                    prev_states[lane] = Some(states);
                 }
             }
-            // Hand over the oldest frame once the ring is full, or while draining.
-            if pending.len() == RING || (i >= count && !pending.is_empty()) {
-                match pending.pop_front().unwrap() {
-                    (f, None) => sink(f, &last)?,
-                    (f, Some(idx)) => {
+            // Hand over frames up to the oldest submission once the ring is full; at the end, all of them.
+            let done = pos == order.len();
+            let in_flight = pending.iter().filter(|p| p.2.is_some()).count();
+            if in_flight == RING || pending.len() > 4 * RING || done {
+                while let Some((f, lane, sub)) = pending.pop_front() {
+                    let real = sub.is_some();
+                    if let Some((slot, idx)) = sub {
                         let c = self.i420.as_ref().unwrap();
-                        let slot = &c.ring[f as usize % RING];
-                        self.map_wait(slot, idx)?;
-                        last.clear();
-                        last.extend_from_slice(&slot.get_mapped_range(..).map_err(|e| e.to_string())?);
-                        slot.unmap();
-                        sink(f, &last)?;
+                        let buf = &c.ring[slot];
+                        self.map_wait(buf, idx)?;
+                        last[lane].clear();
+                        last[lane].extend_from_slice(&buf.get_mapped_range(..).map_err(|e| e.to_string())?);
+                        buf.unmap();
+                    }
+                    sink(f, &last[lane])?;
+                    if real && !done {
+                        break;
                     }
                 }
             }
@@ -383,10 +402,30 @@ mod tests {
         )
         .unwrap();
         let mut frames = Vec::new();
-        Headless::new(64, 32).unwrap().render_i420(&tl, 5, |i, f| Ok(frames.push((i, f.to_vec())))).unwrap();
+        Headless::new(64, 32).unwrap().render_i420(&tl, &[0, 1, 2, 3, 4], 1, |i, f| Ok(frames.push((i, f.to_vec())))).unwrap();
         assert_eq!(frames.iter().map(|f| f.0).collect::<Vec<_>>(), [0, 1, 2, 3, 4]);
         assert_ne!(frames[0].1, frames[1].1, "moving");
         assert_eq!(frames[2].1, frames[4].1, "held after the move ends");
         assert_eq!(frames[0].1.len(), 64 * 32 * 3 / 2);
+    }
+
+    /// Needs a GPU.
+    #[test]
+    fn interleaved_lanes_match_in_order_frames() {
+        let tl = Timeline::from_ron(
+            "(width: 64, height: 32, fps: 10, duration: 0.8, background: (0.0, 0.0, 0.0, 1.0),
+              objects: [(shape: Rect(size: (8.0, 8.0)))],
+              tracks: [(object: 0, start: 0.1, end: 0.3, anim: Move(from: (8.0, 16.0), to: (40.0, 16.0))),
+                       (object: 0, start: 0.5, end: 0.7, anim: Move(from: (40.0, 16.0), to: (8.0, 16.0)))])",
+        )
+        .unwrap();
+        let mut r = Headless::new(64, 32).unwrap();
+        let mut seq = vec![Vec::new(); 8];
+        r.render_i420(&tl, &(0..8).collect::<Vec<_>>(), 1, |i, f| Ok(seq[i as usize] = f.to_vec())).unwrap();
+        let mut lanes = vec![Vec::new(); 8];
+        let mut order = Vec::new();
+        r.render_i420(&tl, &[0, 4, 1, 5, 2, 6, 3, 7], 2, |i, f| Ok({ order.push(i); lanes[i as usize] = f.to_vec() })).unwrap();
+        assert_eq!(order, [0, 4, 1, 5, 2, 6, 3, 7], "sink gets frames in the given order");
+        assert_eq!(seq, lanes);
     }
 }

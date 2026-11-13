@@ -51,5 +51,13 @@ scene "router" {
   // Swing around; the label stays on the chip.
   after 0.5s orbit cam by 70deg duration 3s
   after explode router by 0.35 duration 1.5s
+
+  // Put it back together and cut it open from the right.
+  after 0.5s explode router by -0.35 duration 1s
+  with move router.lid by (0, 300) duration 1s
+  with move router.leds by (0, 300) duration 1s
+  after section router to 0.45 axis x duration 2s
+  with fade_out chip_lbl duration 500ms
+  with fade_out chip_arrow duration 500ms
   wait 1.5s
 }

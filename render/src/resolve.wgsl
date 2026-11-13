@@ -4,6 +4,8 @@ struct Obj {
     model: mat4x4<f32>,
     color: vec4<f32>,
     outline: vec4<f32>,
+    // Section cut: discard where dot(xyz, world) > w.
+    clip: vec4<f32>,
     id: u32,
     _p0: u32,
     _p1: u32,

@@ -1,0 +1,51 @@
+// A tour of newer features: layout, stagger, highlight, shake, group
+// transforms, actions inside components, and data from files.
+import "std:cybersec"
+
+// A byte that knows how to pop in.
+component pop_byte(label) {
+  rect box size (56, 56) corner 6 color #21262d
+  code t content label size 22 color #ffb347
+  fade_in box duration 200ms
+  with fade_in t duration 200ms
+  after scale box by 1.15 duration 120ms
+  after scale box by 0.87 duration 120ms
+}
+
+scene "features" {
+  size (1920, 1080)
+  background #0d1117
+
+  let payload = bytes("assets/payload.bin")
+
+  text title "Data from *payload.bin*" size 52 at (960, 80)
+  text sub "48 bytes, read when the scene compiles" size 26 color #6e7681 below title gap 12
+
+  // Real bytes from the file, laid out by the library.
+  hexdump dump data payload cols 16 size 22 at (300, 230)
+
+  // A row of cells, staggered in, then highlighted and shaken.
+  repeat 8 as i {
+    rect cell[i] size (64, 64) corner 6 color #2d2a1e at (700 + i * 72, 560)
+    code lbl[i] content payload[24 + i] size 24 color #ffb347 at (700 + i * 72, 560)
+  }
+  text note "return address" size 24 color #e5484d below cell[3] gap 16
+
+  // A whole component instance rotates and scales as one.
+  memory_row mem n 4 fill #388bfd at (480, 820)
+
+  at 0.3s fade_in title duration 500ms
+  with fade_in sub duration 500ms
+  after fade_in dump stagger 120ms duration 300ms
+  after fade_in cell stagger 60ms duration 250ms
+  with fade_in lbl stagger 60ms duration 250ms
+  after highlight cell color #e5484d
+  with fade_in note
+  after shake cell by 10
+  with shake lbl by 10
+  after fade_in mem
+  after rotate mem by 90deg duration 1s
+  with scale mem to 1.5 duration 1s
+  after pop_byte x label "41" at (1400, 820)
+  wait 1s
+}

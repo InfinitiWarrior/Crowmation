@@ -2,19 +2,56 @@
   "name": "Crowmation",
   "scopeName": "source.cwm",
   "patterns": [
-    { "name": "comment.line.double-slash.cwm", "match": "//.*$" },
+    {
+      "name": "comment.line.double-slash.cwm",
+      "match": "//.*$"
+    },
     {
       "name": "string.quoted.double.cwm",
-      "begin": "\"", "end": "\"",
-      "patterns": [{ "name": "constant.character.escape.cwm", "match": "\\\\[\\\\\"n#]" }]
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [
+        {
+          "name": "constant.character.escape.cwm",
+          "match": "\\\\[\\\\\"n#]"
+        }
+      ]
     },
-    { "name": "constant.other.color.cwm", "match": "#\\h{6}(\\h{2})?\\b" },
-    { "name": "constant.numeric.cwm", "match": "\\b\\d+(\\.\\d+)?(s|ms|deg|rad)?\\b" },
-    { "name": "keyword.control.cwm", "match": "\\b(scene|component|import|let|repeat|as|wait|at|after|with)\\b" },
-    { "name": "keyword.other.setting.cwm", "match": "\\b(size|fps|background|duration)\\b" },
-    { "name": "storage.type.object.cwm", "match": "\\b(rect|circle|arrow|line|image|text|code|math|model|camera)\\b" },
-    { "name": "entity.name.function.action.cwm", "match": "\\b(move|rotate|scale|fade|fade_in|fade_out|color|orbit|tilt|explode)\\b" },
-    { "name": "variable.parameter.property.cwm", "match": "\\b(to|by|ease|from|width|head|radius|corner|outline|outline_width|opacity|rotation|lang|content|fov|z|layer|pin)\\b" },
-    { "name": "constant.language.cwm", "match": "\\b(overlay|world|linear|in|out|in_out)\\b" }
+    {
+      "name": "constant.other.color.cwm",
+      "match": "#\\h{6}(\\h{2})?\\b"
+    },
+    {
+      "name": "constant.numeric.cwm",
+      "match": "\\b\\d+(\\.\\d+)?(s|ms|deg|rad)?\\b"
+    },
+    {
+      "name": "support.function.cwm",
+      "match": "\\b(len|floor|ceil|round|abs|min|max|mod|str|hex|join|slice|ascii|bytes|file|table)(?=\\()"
+    },
+    {
+      "name": "keyword.control.cwm",
+      "match": "\\b(scene|component|import|let|repeat|as|wait|at|after|with)\\b"
+    },
+    {
+      "name": "keyword.other.setting.cwm",
+      "match": "\\b(size|fps|background|duration)\\b"
+    },
+    {
+      "name": "storage.type.object.cwm",
+      "match": "\\b(rect|circle|arrow|line|image|text|code|math|model|camera)\\b"
+    },
+    {
+      "name": "entity.name.function.action.cwm",
+      "match": "\\b(move|rotate|scale|fade|fade_in|fade_out|color|orbit|tilt|explode|highlight|shake|section)\\b"
+    },
+    {
+      "name": "variable.parameter.property.cwm",
+      "match": "\\b(to|by|ease|from|width|head|radius|corner|outline|outline_width|opacity|rotation|lang|content|fov|z|layer|pin|stagger|align|below|above|left_of|right_of|gap|axis|times)\\b"
+    },
+    {
+      "name": "constant.language.cwm",
+      "match": "\\b(overlay|world|linear|in|out|in_out|left|center|right)\\b"
+    }
   ]
 }

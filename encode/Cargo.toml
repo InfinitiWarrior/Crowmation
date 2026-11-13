@@ -2,14 +2,20 @@
 name = "crowmation-encode"
 version = "0.1.0"
 edition.workspace = true
+license.workspace = true
+repository.workspace = true
 
 [features]
-# NVIDIA hardware encoding. Needs the NVIDIA driver (libnvidia-encode, libcuda) at build and run time.
-nvenc = ["dep:nvidia-video-codec-sdk", "dep:cudarc"]
+# NVIDIA hardware encoding. The driver libraries (libnvidia-encode, libcuda) are
+# loaded at run time, so the same binary builds and runs on machines without
+# them and falls back to openh264.
+nvenc = ["dep:nvidia-video-codec-sdk", "dep:cudarc", "dep:libloading"]
 
 [dependencies]
 muxide = "0.5"
 openh264 = "0.9"
-nvidia-video-codec-sdk = { version = "0.4", optional = true }
-# Pins a CUDA API version so cudarc's build does not need the CUDA toolkit (nvcc).
-cudarc = { version = "0.16", features = ["cuda-12090"], optional = true }
+# `ci-check`: do not link the driver at build time (see src/nvenc_load.rs). It
+# also picks cudarc's CUDA 12.2 API with dynamic loading, so no CUDA toolkit is needed.
+nvidia-video-codec-sdk = { version = "0.4", features = ["ci-check"], optional = true }
+cudarc = { version = "0.16", optional = true }
+libloading = { version = "0.8", optional = true }

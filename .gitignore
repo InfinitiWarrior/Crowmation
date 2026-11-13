@@ -10,3 +10,4 @@ DESIGN.md
 .DS_Store
 node_modules
 *.vsix
+!website/media/*.mp4

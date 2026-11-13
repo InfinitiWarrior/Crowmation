@@ -1,0 +1,30 @@
+# Publishes website/ with GitHub Pages on every push to main that changes it.
+# One time setup: repository Settings > Pages > Source: GitHub Actions.
+# Custom domain (crowmation.com): set in Settings > Pages > Custom domain;
+# a CNAME file is ignored for workflow deployments.
+name: website
+
+on:
+  push:
+    branches: [main]
+    paths: ["website/**"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-24.04
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: website
+      - id: deploy
+        uses: actions/deploy-pages@v4

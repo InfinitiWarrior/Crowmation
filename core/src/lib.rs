@@ -1,7 +1,17 @@
 //! Compiled timeline (IR): a flat, fully resolved scene. Every frame is a pure
 //! function of time, so frames can be rendered in any order or in parallel.
 
-use glam::Vec2;
+use glam::{Vec2, Vec3};
+
+fn half() -> f32 {
+    0.5
+}
+fn is_half(v: &f32) -> bool {
+    *v == 0.5
+}
+fn one_u8() -> u8 {
+    1
+}
 use serde::{Deserialize, Serialize};
 
 /// Largest frame width or height. 3D scenes render at 2x internally, which
@@ -36,7 +46,7 @@ pub struct Object {
     /// Stroke around the shape. Fades with the object's opacity.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub outline: Option<Outline>,
-    /// 3D only: transforms and opacity are relative to this object (a `Model`).
+    /// Transforms and opacity are relative to this object (a `Group` or `Model`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent: Option<usize>,
     /// 3D only: 2D object drawn on top of everything at the screen position of
@@ -75,11 +85,27 @@ pub enum Shape {
     Arrow { to: Vec2, width: f32, head: f32 },
     /// PNG or JPEG file (absolute path), drawn at `size` pixels.
     Image { path: String, size: Vec2 },
-    /// Typst markup, laid out at 1pt = 1px and centered on the position.
-    Typst { source: String },
+    /// Typst markup, laid out at 1pt = 1px and placed on the position: `align`
+    /// 0 puts the left edge there, 0.5 the center (default), 1 the right edge.
+    Typst {
+        source: String,
+        #[serde(default = "half", skip_serializing_if = "is_half")]
+        align: f32,
+    },
+    /// Draws nothing; its children (`Object::parent`) are placed, rotated,
+    /// scaled and faded with it. Component instances are groups.
+    Group,
     /// 3D group for the parts of a glTF file. Child meshes are scaled by
     /// `unit` (pixels per model unit); child positions are in pixels.
-    Model { unit: f32 },
+    /// `size` is the model's bounding box in pixels; `section_axis` (0 x,
+    /// 1 y, 2 z) is the axis `State::section` cuts along.
+    Model {
+        unit: f32,
+        #[serde(default)]
+        size: Vec3,
+        #[serde(default = "one_u8")]
+        section_axis: u8,
+    },
     /// One part (`Mesh::parts[part]`) of a .glb file (absolute path), placed
     /// relative to its parent model. Lit flat color: the state's color.
     Mesh { path: String, part: usize },
@@ -103,11 +129,13 @@ pub struct State {
     pub scale: f32,
     pub opacity: f32,
     pub color: Color,
+    /// Models only: fraction of the model kept by a section cut, 1 (all) to 0.
+    pub section: f32,
 }
 
 impl Default for State {
     fn default() -> Self {
-        Self { pos: Vec2::ZERO, z: 0.0, rotation: 0.0, turn: Vec2::ZERO, scale: 1.0, opacity: 1.0, color: [1.0; 4] }
+        Self { pos: Vec2::ZERO, z: 0.0, rotation: 0.0, turn: Vec2::ZERO, scale: 1.0, opacity: 1.0, color: [1.0; 4], section: 1.0 }
     }
 }
 
@@ -134,6 +162,7 @@ pub enum Anim {
     Tilt { from: f32, to: f32 },
     /// `turn.y`: rotation around the vertical axis.
     Orbit { from: f32, to: f32 },
+    Section { from: f32, to: f32 },
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -231,9 +260,19 @@ impl Timeline {
     pub fn eval(&self, t: f64) -> Vec<State> {
         let mut states: Vec<State> = self.objects.iter().map(|o| o.state).collect();
         for tr in self.tracks.iter().take_while(|tr| tr.start <= t) {
-            let p = if tr.end > tr.start { ((t - tr.start) / (tr.end - tr.start)).min(1.0) } else { 1.0 };
-            let p = tr.ease.apply(p as f32);
-            let s = &mut states[tr.object];
+            tr.apply(&mut states[tr.object], t);
+        }
+        states
+    }
+}
+
+impl Track {
+    /// Apply this track's value at time `t` (at or after its start) to `s`.
+    pub fn apply(&self, s: &mut State, t: f64) {
+        let tr = self;
+        let p = if tr.end > tr.start { ((t - tr.start) / (tr.end - tr.start)).min(1.0) } else { 1.0 };
+        let p = tr.ease.apply(p as f32);
+        {
             match &tr.anim {
                 Anim::Move { from, to } => s.pos = from.lerp(*to, p),
                 Anim::Rotate { from, to } => s.rotation = lerp(*from, *to, p),
@@ -243,9 +282,9 @@ impl Timeline {
                 Anim::Z { from, to } => s.z = lerp(*from, *to, p),
                 Anim::Tilt { from, to } => s.turn.x = lerp(*from, *to, p),
                 Anim::Orbit { from, to } => s.turn.y = lerp(*from, *to, p),
+                Anim::Section { from, to } => s.section = lerp(*from, *to, p),
             }
         }
-        states
     }
 }
 

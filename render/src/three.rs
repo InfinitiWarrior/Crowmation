@@ -20,7 +20,7 @@ use vello::{AaConfig, RenderParams, Renderer, Scene, wgpu};
 const SS: u32 = 2;
 const DEPTH: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 const COLOR: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
-const OBJ_BYTES: u64 = 112;
+const OBJ_BYTES: u64 = 128;
 
 struct Target {
     view: wgpu::TextureView,
@@ -257,7 +257,7 @@ impl Three {
         let mut overlay = false;
         let mut pinned = states.clone();
         for (i, o) in tl.objects.iter().enumerate() {
-            if matches!(o.shape, Shape::Model { .. } | Shape::Mesh { .. } | Shape::Camera { .. }) || states[i].opacity <= 0.0 {
+            if matches!(o.shape, Shape::Group | Shape::Model { .. } | Shape::Mesh { .. } | Shape::Camera { .. }) || world[i].1 <= 0.0 {
                 continue;
             }
             if let Some(p) = o.pin {
@@ -271,8 +271,8 @@ impl Three {
             }
             if o.overlay || o.pin.is_some() {
                 overlay = true;
-            } else if !planes.contains(&states[i].z) {
-                planes.push(states[i].z);
+            } else if !planes.contains(&plane_z(&world, i)) {
+                planes.push(plane_z(&world, i));
             }
         }
         // ponytail: distinct depths cap; merge nearby depths if scenes need more
@@ -286,7 +286,7 @@ impl Three {
         let params = RenderParams { base_color: Color::TRANSPARENT, width: self.width * SS, height: self.height * SS, antialiasing_method: AaConfig::Area };
         let layer_of = |i: usize| -> Option<usize> {
             let o = &tl.objects[i];
-            if o.overlay || o.pin.is_some() { Some(planes.len()) } else { planes.iter().position(|z| *z == states[i].z) }
+            if o.overlay || o.pin.is_some() { Some(planes.len()) } else { planes.iter().position(|z| *z == plane_z(&world, i)) }
         };
         for k in 0..planes.len() + overlay as usize {
             let mut scene = std::mem::take(&mut self.scene);
@@ -299,11 +299,12 @@ impl Three {
             r?;
         }
 
-        // Per object data: world matrix, color, outline, id.
+        // Per object data: world matrix, color, outline, section clip plane, id.
         let mut objs: Vec<u8> = Vec::with_capacity(tl.objects.len() * OBJ_BYTES as usize);
         for (i, (o, (m, opacity, color))) in tl.objects.iter().zip(&world).enumerate() {
             let outline = o.outline.as_ref().map_or([0.0; 4], |l| [l.color[0], l.color[1], l.color[2], l.color[3] * opacity]);
-            let floats = m.to_cols_array().into_iter().chain([color[0], color[1], color[2], color[3] * opacity]).chain(outline);
+            let clip = clip_plane(tl, &states, &world, i);
+            let floats = m.to_cols_array().into_iter().chain([color[0], color[1], color[2], color[3] * opacity]).chain(outline).chain(clip);
             objs.extend(floats.flat_map(f32::to_le_bytes));
             objs.extend([(i + 1) as u32, 0, 0, 0].into_iter().flat_map(u32::to_le_bytes));
         }
@@ -483,13 +484,42 @@ fn camera(tl: &Timeline, states: &[State]) -> Camera {
     Camera { view_proj: proj * view, eye }
 }
 
+/// Depth of the plane a 2D object is drawn on.
+fn plane_z(world: &[(Mat4, f32, [f32; 4])], i: usize) -> f32 {
+    world[i].0.w_axis.z
+}
+
+/// Section cut for a model part: (normal, d) in world space; points with
+/// dot(normal, p) > d are cut away. Nothing is cut for (0, 0, 0, 1).
+fn clip_plane(tl: &Timeline, states: &[State], world: &[(Mat4, f32, [f32; 4])], i: usize) -> [f32; 4] {
+    let o = &tl.objects[i];
+    let Some(p) = o.parent else { return [0.0, 0.0, 0.0, 1.0] };
+    let (Shape::Mesh { .. }, Shape::Model { size, section_axis, .. }) = (&o.shape, &tl.objects[p].shape) else {
+        return [0.0, 0.0, 0.0, 1.0];
+    };
+    let keep = states[p].section;
+    if keep >= 1.0 {
+        return [0.0, 0.0, 0.0, 1.0];
+    }
+    // Cut from the right (x), the top (y, which points down) or the front (z).
+    let (n, len) = match section_axis {
+        0 => (Vec3::X, size.x),
+        2 => (Vec3::Z, size.z),
+        _ => (Vec3::NEG_Y, size.y),
+    };
+    let m = world[p].0;
+    let point = m.transform_point3(n * (len * keep - len / 2.0));
+    let normal = m.transform_vector3(n).normalize_or_zero();
+    [normal.x, normal.y, normal.z, normal.dot(point)]
+}
+
 /// World matrix, opacity and color of every object, parents applied.
 fn world_transforms(tl: &Timeline, states: &[State]) -> Vec<(Mat4, f32, [f32; 4])> {
     let mut out: Vec<(Mat4, f32, [f32; 4])> = Vec::with_capacity(states.len());
     for (o, s) in tl.objects.iter().zip(states) {
         // A model's unit scales its parts' vertices; part offsets are already in pixels.
         let unit = match (&o.shape, o.parent.map(|p| &tl.objects[p].shape)) {
-            (Shape::Mesh { .. }, Some(Shape::Model { unit })) => *unit,
+            (Shape::Mesh { .. }, Some(Shape::Model { unit, .. })) => *unit,
             _ => 1.0,
         };
         let local = Mat4::from_translation(s.pos.extend(s.z))
